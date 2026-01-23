@@ -1,0 +1,1626 @@
+import os
+
+# ---------------------------
+# FORCE CORRECT 800x480 SCALING ON PI TOUCH
+# ---------------------------
+os.environ["QT_QPA_PLATFORM"] = "eglfs"
+os.environ["QT_QPA_EGLFS_HIDECURSOR"] = "1"
+os.environ["QT_QPA_EGLFS_PHYSICAL_WIDTH"] = "154"
+os.environ["QT_QPA_EGLFS_PHYSICAL_HEIGHT"] = "86"
+os.environ["QT_FONT_DPI"] = "96"
+
+import sys
+import random
+import json
+import time
+from pathlib import Path
+from PyQt5 import QtWidgets, QtGui, QtCore
+
+WIDTH, HEIGHT = 800, 480
+# ---------------------------
+# CO danger threshold
+# ---------------------------
+CO_DANGER_THRESHOLD = 35  # ppm
+
+
+def add_watermark(parent, x, y, w=350, opacity=0.06):
+    label = QtWidgets.QLabel(parent)
+    pix = QtGui.QPixmap("assets/logo.png").scaled(
+        w, w,
+        QtCore.Qt.KeepAspectRatio,
+        QtCore.Qt.SmoothTransformation
+    )
+    label.setPixmap(pix)
+    label.move(x, y)
+    label.lower()  # keep behind everything
+
+    effect = QtWidgets.QGraphicsOpacityEffect()
+    effect.setOpacity(opacity)
+    label.setGraphicsEffect(effect)
+
+    return label
+
+
+# ---------------------------
+# Mock data (replace later)
+# ---------------------------
+def mock_readings():
+    return {
+        "co2": random.randint(450, 2000),
+        "pm25": round(random.uniform(2, 500), 1),
+        "voc": round(random.uniform(0.2, 2.8), 2),
+        "temp": round(random.uniform(68, 78), 1),
+        "humidity": round(random.uniform(35, 55), 1),
+        "co": round(random.uniform(0, 30), 1),
+    }
+
+
+from enum import Enum
+
+class AlertState(Enum):
+    NORMAL = 0
+    WARNING = 1
+    CRITICAL = 2
+
+
+def penalty_color(points):
+    # points are negative numbers
+    if points <= -20:
+        return "#f44336"  # red
+    if points <= -10:
+        return "#ff9800"  # orange
+    return "#ffeb3b"      # yellow
+
+
+def evaluate_readings(d, history):
+    """
+    Returns:
+      score (int),
+      breakdown (list of dicts),
+      how_to_improve (list of str),
+      state (AlertState)
+    """
+
+    breakdown = []
+    how = []
+    # -------------------------
+    # Alert state (safety first)
+    # -------------------------
+    if d["co"] >= CO_DANGER_THRESHOLD:
+        state = AlertState.CRITICAL
+    elif d["pm25"] > 35 or d["co2"] > 1200 or d["voc"] > 2.0 or d["co"] >= 9:
+        state = AlertState.WARNING
+    else:
+        state = AlertState.NORMAL
+
+    score = 100
+
+    # -------------------------
+    # PM2.5 analysis & penalty
+    # -------------------------
+    pm25_analysis = analyze_pm25(
+        d["pm25"],
+        history.get("pm25", [])
+    )
+
+    # Penalty logic stays simple
+    pm_pen = 0
+    if d["pm25"] > 35:
+        pm_pen = -25
+    elif d["pm25"] > 12:
+        pm_pen = -10
+
+    if pm_pen:
+        score += pm_pen
+        breakdown.append({
+            "metric": "PM2.5",
+            "points": pm_pen,
+            "label": pm25_severity(d["pm25"])[0],
+            "color": penalty_color(pm_pen),
+            "analysis": pm25_analysis
+        })
+
+        # Pull recommendations from analysis
+        how.extend(pm25_analysis["recommendations"])
+
+
+    # -------------------------
+    # CO2 penalty
+    # -------------------------
+    co2_pen = 0
+    if d["co2"] > 1200:
+        co2_pen = -20
+        how.append("Increase fresh air ventilation; consider checking HVAC outside air settings.")
+    elif d["co2"] > 800:
+        co2_pen = -10
+        how.append("Ventilation could be improved (open door/window briefly or increase outside air).")
+
+    if co2_pen:
+        score += co2_pen
+        breakdown.append({
+            "metric": "CO₂",
+            "points": co2_pen,
+            "label": co2_severity(d["co2"])[0],
+            "color": penalty_color(co2_pen),
+        })
+
+    # -------------------------
+    # VOC penalty
+    # -------------------------
+    voc_pen = 0
+    if d["voc"] > 2.0:
+        voc_pen = -20
+        how.append("Reduce VOC sources (cleaners/solvents); increase ventilation; consider activated carbon filtration.")
+    elif d["voc"] > 1.0:
+        voc_pen = -10
+        how.append("Ventilate and reduce VOC sources (fragrances, sprays, harsh cleaners).")
+
+    if voc_pen:
+        score += voc_pen
+        breakdown.append({
+            "metric": "VOC",
+            "points": voc_pen,
+            "label": "High" if d["voc"] > 2.0 else "Elevated",
+            "color": penalty_color(voc_pen),
+        })
+
+    # -------------------------
+    # CO penalty (dominant safety factor)
+    # -------------------------
+    co_pen = 0
+    if d["co"] >= CO_DANGER_THRESHOLD:
+        co_pen = -60  # heavy
+        how.insert(0, "CO is dangerous — ventilate immediately and shut off combustion sources.")
+        how.insert(1, "Evacuate if levels remain high; verify with a calibrated meter.")
+    elif d["co"] >= 9:
+        co_pen = -20
+        how.insert(0, "CO detected — investigate combustion sources and improve ventilation.")
+
+    if co_pen:
+        score += co_pen
+        breakdown.append({
+            "metric": "CO",
+            "points": co_pen,
+            "label": co_severity(d["co"])[0],
+            "color": penalty_color(co_pen),
+        })
+
+    # Hard safety cap: if CRITICAL, cap the score so it never looks “okay”
+    if state == AlertState.CRITICAL:
+        score = min(score, 30)
+
+    score = max(min(int(score), 100), 0)
+
+    # Keep how-to clean (no duplicates)
+    seen = set()
+    how_unique = []
+    for item in how:
+        if item not in seen:
+            seen.add(item)
+            how_unique.append(item)
+
+    return score, breakdown, how_unique, state
+
+ # ---------------------------
+# Severity helpers
+# ---------------------------
+def pm25_severity(v):
+    if v <= 12:
+        return ("Good", "#4caf50", "Air quality is healthy.")
+    elif v <= 35:
+        return ("Moderate", "#ffeb3b", "Sensitive individuals may be affected.")
+    elif v <= 55:
+        return ("Poor", "#ff9800", "Unhealthy for sensitive groups.")
+    else:
+        return ("Unhealthy", "#f44336", "Unhealthy for everyone.")
+
+def co2_severity(v):
+    if v <= 800:
+        return ("Good", "#4caf50", "Ventilation is adequate.")
+    elif v <= 1200:
+        return ("Elevated", "#ff9800", "Ventilation could be improved.")
+    else:
+        return ("High", "#f44336", "Fresh air strongly recommended.")
+
+def humidity_severity(v):
+    if 30 <= v <= 50:
+        return ("Optimal", "#4caf50", "Comfortable humidity level.")
+    elif v < 30:
+        return ("Low", "#03a9f4", "May cause dry skin and irritation.")
+    else:
+        return ("High", "#ff9800", "May encourage mold growth.")
+        
+def co_severity(v):
+    if v <= 9:
+        return ("Safe", "#4caf50", "Carbon monoxide levels are safe.")
+    elif v <= 35:
+        return ("Elevated", "#ff9800", "CO detected — investigate sources.")
+    else:
+        return ("Danger", "#f44336", "Dangerous CO levels — ventilate immediately.")
+# ---------------------------
+# Rolling analysis helpers
+# ---------------------------
+def rolling_avg(values):
+    return sum(values) / len(values) if values else 0
+
+def peak_count(values, threshold):
+    return sum(1 for v in values if v >= threshold)
+
+def sustained(values, threshold, ratio=0.5):
+    if not values:
+        return False
+    return peak_count(values, threshold) / len(values) >= ratio
+
+def analyze_pm25(current, history):
+    """
+    Returns structured PM2.5 analysis for detail view
+    """
+    analysis = {
+        "status": "",
+        "confidence": "Low",
+        "summary": "",
+        "health": "",
+        "recommendations": [],
+        "window": "Instant"
+    }
+
+    if not history or len(history) < 5:
+        analysis["status"] = "Initial reading"
+        analysis["summary"] = "Not enough data collected to determine trends yet."
+        analysis["health"] = "Short-term exposure risk cannot yet be assessed."
+        return analysis
+
+    # 🔧 IMPORTANT: normalize deque → list ONCE
+    values = list(history)
+
+    avg = rolling_avg(values)
+    peaks = peak_count(values, 35)
+    sustained_high = sustained(values, 35, ratio=0.75)
+
+    recent = values[-5:]
+    recent_high = any(v > 35 for v in recent)
+
+    analysis["confidence"] = "High" if len(values) >= 20 else "Medium"
+    analysis["window"] = "Rolling (~1 min)"
+
+    if sustained_high:
+        analysis["status"] = "Sustained elevation"
+        analysis["summary"] = "PM2.5 levels have remained consistently elevated over time."
+        analysis["health"] = (
+            "Longer exposure to elevated PM2.5 increases risk of respiratory and cardiovascular stress."
+        )
+        analysis["recommendations"].append(
+            "Continuous filtration with a HEPA purifier is strongly recommended."
+        )
+
+    elif peaks >= 5:
+        analysis["status"] = "Repeated spikes"
+        analysis["summary"] = "Multiple PM2.5 spikes detected, suggesting intermittent particle sources."
+        analysis["health"] = "Short-term spikes may aggravate asthma and sensitive individuals."
+        analysis["recommendations"].append(
+            "Identify intermittent sources such as cooking, candles, or dust disturbance."
+        )
+
+    elif recent_high:
+        analysis["status"] = "Recently elevated"
+        analysis["summary"] = "PM2.5 was elevated recently but is now declining."
+        analysis["health"] = "Recent exposure may still affect sensitive individuals."
+        analysis["recommendations"].append(
+            "Continue ventilation or filtration to ensure levels remain low."
+        )
+
+    elif avg <= 12:
+        analysis["status"] = "Stable / Healthy"
+        analysis["summary"] = "PM2.5 levels have remained consistently low."
+        analysis["health"] = "Air quality is within healthy limits for extended exposure."
+
+    else:
+        analysis["status"] = "Moderate elevation"
+        analysis["summary"] = "PM2.5 levels are moderately elevated but not persistently high."
+        analysis["health"] = "Sensitive individuals may experience irritation or discomfort."
+
+    return analysis
+
+
+
+def analyze_co2(current, history):
+    """
+    Returns structured CO₂ analysis for detail view
+    """
+    analysis = {
+        "status": "",
+        "confidence": "Low",
+        "summary": "",
+        "health": "",
+        "recommendations": [],
+        "window": "Instant"
+    }
+
+    # Not enough data yet
+    if not history or len(history) < 5:
+        analysis["status"] = "Initial reading"
+        analysis["summary"] = "Not enough data collected to determine ventilation trends yet."
+        analysis["health"] = "Short-term CO₂ exposure at this level cannot yet be assessed."
+        return analysis
+
+    # 🔧 Normalize deque → list ONCE
+    values = list(history)
+
+    avg = rolling_avg(values)
+    sustained_high = sustained(values, 1200, ratio=0.7)
+
+    recent = values[-5:]
+    recent_high = any(v > 1200 for v in recent)
+
+    analysis["confidence"] = "High" if len(values) >= 20 else "Medium"
+    analysis["window"] = "Rolling (~1 min)"
+
+    if sustained_high:
+        analysis["status"] = "Sustained elevation"
+        analysis["summary"] = (
+            "CO₂ levels have remained consistently elevated, indicating insufficient ventilation."
+        )
+        analysis["health"] = (
+            "Prolonged elevated CO₂ may cause fatigue, headaches, and reduced cognitive performance."
+        )
+        analysis["recommendations"].extend([
+            "Increase fresh air ventilation (open windows or doors where safe).",
+            "Inspect HVAC outside-air intake and damper operation."
+        ])
+
+    elif current > 1200:
+        analysis["status"] = "High"
+        analysis["summary"] = "CO₂ is currently elevated, suggesting poor air exchange."
+        analysis["health"] = "Short-term exposure may reduce concentration and cause drowsiness."
+        analysis["recommendations"].append(
+            "Ventilate the space to reduce CO₂ buildup."
+        )
+
+    elif recent_high:
+        analysis["status"] = "Recently elevated"
+        analysis["summary"] = "CO₂ levels were elevated recently but are now improving."
+        analysis["health"] = "Recent exposure may still affect comfort and alertness."
+        analysis["recommendations"].append(
+            "Continue ventilation to ensure levels remain stable."
+        )
+
+    elif current > 800:
+        analysis["status"] = "Moderate"
+        analysis["summary"] = "CO₂ is moderately elevated and may increase with occupancy."
+        analysis["health"] = "Sensitive individuals may notice mild fatigue."
+
+    else:
+        analysis["status"] = "Healthy"
+        analysis["summary"] = "CO₂ levels indicate adequate ventilation."
+        analysis["health"] = "Air quality supports comfort and cognitive performance."
+
+    return analysis
+
+    
+def analyze_voc(current, history):
+    """
+    Returns structured VOC analysis for detail view
+    """
+    analysis = {
+        "status": "",
+        "confidence": "Low",
+        "summary": "",
+        "health": "",
+        "recommendations": [],
+        "window": "Instant"
+    }
+
+    # Not enough data yet
+    if not history or len(history) < 5:
+        analysis["status"] = "Initial reading"
+        analysis["summary"] = "Not enough data collected to determine VOC trends yet."
+        analysis["health"] = "Short-term VOC exposure risk cannot yet be assessed."
+        return analysis
+
+    # 🔧 Normalize deque → list ONCE
+    values = list(history)
+
+    avg = rolling_avg(values)
+    peaks = peak_count(values, 2.0)
+    sustained_high = sustained(values, 2.0, ratio=0.6)
+
+    recent = values[-5:]
+    recent_high = any(v > 2.0 for v in recent)
+
+    analysis["confidence"] = "High" if len(values) >= 20 else "Medium"
+    analysis["window"] = "Rolling (~1 min)"
+
+    if sustained_high:
+        analysis["status"] = "Sustained elevation"
+        analysis["summary"] = (
+            "VOC levels have remained consistently elevated over time."
+        )
+        analysis["health"] = (
+            "Prolonged exposure to elevated VOCs may irritate airways and increase headaches or nausea."
+        )
+        analysis["recommendations"].extend([
+            "Increase ventilation to remove indoor VOC buildup.",
+            "Reduce or eliminate VOC sources (cleaners, fragrances, solvents).",
+            "Consider activated carbon or charcoal filtration."
+        ])
+
+    elif current > 2.0:
+        analysis["status"] = "High"
+        analysis["summary"] = "VOC levels are currently elevated."
+        analysis["health"] = "Short-term exposure may irritate eyes, throat, or sensitive individuals."
+        analysis["recommendations"].append(
+            "Ventilate the space and reduce active VOC sources."
+        )
+
+    elif recent_high:
+        analysis["status"] = "Recently elevated"
+        analysis["summary"] = "VOC levels were elevated recently but are now declining."
+        analysis["health"] = "Recent exposure may still cause mild irritation."
+        analysis["recommendations"].append(
+            "Continue ventilation until VOC levels stabilize."
+        )
+
+    elif avg <= 1.0:
+        analysis["status"] = "Stable / Healthy"
+        analysis["summary"] = "VOC levels have remained consistently low."
+        analysis["health"] = "Air quality supports comfort with minimal chemical exposure."
+
+    else:
+        analysis["status"] = "Moderate elevation"
+        analysis["summary"] = "VOC levels are moderately elevated but not persistently high."
+        analysis["health"] = "Some individuals may experience mild irritation or odor sensitivity."
+
+    return analysis
+
+
+
+
+# ---------------------------
+# Smart advice engine (pattern-based)
+# ---------------------------
+def smart_advice(history):
+    advice = []
+
+    pm_avg = rolling_avg(history["pm25"])
+    pm_peaks = peak_count(history["pm25"], 35)
+
+    if pm_avg > 35:
+        advice.append(
+            "PM2.5 has remained elevated over time, indicating a continuous particle source rather than a brief event."
+        )
+    elif pm_peaks >= 3:
+        advice.append(
+            "Repeated PM2.5 spikes detected, often caused by cooking, candles, or intermittent airflow."
+        )
+
+    co2_avg = rolling_avg(history["co2"])
+    if co2_avg > 1200:
+        advice.append(
+            "CO₂ has remained elevated over time, suggesting insufficient ventilation for current occupancy."
+        )
+
+    voc_peaks = peak_count(history["voc"], 2.0)
+    if voc_peaks >= 3:
+        advice.append(
+            "Repeated VOC spikes detected, commonly linked to cleaners, fragrances, or off-gassing materials."
+        )
+
+    if sustained(history["co"], 9, ratio=0.3):
+        advice.insert(
+            0,
+            "Carbon monoxide has appeared repeatedly; combustion appliances should be inspected even if levels fluctuate."
+        )
+
+    hum_avg = rolling_avg(history["humidity"])
+    if hum_avg > 55:
+        advice.append(
+            "Humidity has stayed elevated over time, increasing the risk of mold growth."
+        )
+    elif hum_avg < 30:
+        advice.append(
+            "Humidity has remained low, which may worsen dryness and respiratory irritation."
+        )
+
+    return advice
+
+# ---------------------------
+# Base modal overlay & graphing
+# ---------------------------
+class TrendGraph(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.values = []
+        self.setMinimumHeight(90)
+
+    def set_data(self, values):
+        self.values = list(values)
+        self.update()
+
+    def paintEvent(self, event):
+        if len(self.values) < 2:
+            return
+
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+        pad = 8
+
+        vmin, vmax = 0, 100
+        step_x = (w - pad * 2) / (len(self.values) - 1)
+
+        path = QtGui.QPainterPath()
+        for i, v in enumerate(self.values):
+            x = pad + i * step_x
+            y = h - pad - ((v - vmin) / (vmax - vmin)) * (h - pad * 2)
+            path.moveTo(x, y) if i == 0 else path.lineTo(x, y)
+
+        last = self.values[-1]
+        color = "#4caf50" if last >= 80 else "#ff9800" if last >= 60 else "#f44336"
+
+        pen = QtGui.QPen(QtGui.QColor(color), 3)
+        painter.setPen(pen)
+        painter.drawPath(path)
+class DetailOverlay(QtWidgets.QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setGeometry(0, 0, WIDTH, HEIGHT)
+        self.setStyleSheet("background-color:#0b0b0b; color:white;")
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        self.hide()
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(8)
+
+        # Top bar
+        top = QtWidgets.QHBoxLayout()
+
+        logo = QtWidgets.QLabel()
+        logo_pix = QtGui.QPixmap("assets/logo.png").scaled(
+            80, 80,
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation
+        )
+        logo.setPixmap(logo_pix)
+        top.addWidget(logo, alignment=QtCore.Qt.AlignLeft)
+
+        self.title = QtWidgets.QLabel("")
+        self.title.setStyleSheet("font-size:26px; font-weight:bold;")
+        top.addWidget(self.title)
+        top.addStretch()
+
+        layout.addLayout(top)
+
+        self.value = QtWidgets.QLabel("")
+        # Score summary (created once)
+        self.score_summary = QtWidgets.QLabel("")
+        self.score_summary.setStyleSheet("font-size:18px; margin-bottom:6px;")
+        layout.addWidget(self.score_summary)
+
+        self.value.setStyleSheet("font-size:44px; font-weight:bold;")
+        layout.addWidget(self.value)
+        #disabled trend line (uncomment to activate) 
+        #self.trend = TrendGraph()
+        #layout.addWidget(self.trend)
+
+        # Scrollable description area
+        self.desc = QtWidgets.QLabel("")
+        self.desc.setWordWrap(True)
+        self.desc.setAlignment(QtCore.Qt.AlignTop)
+        self.desc.setStyleSheet("font-size:16px; color:#cccccc;")
+        self.desc.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Minimum
+        )
+
+        self.desc_container = QtWidgets.QWidget()
+        desc_layout = QtWidgets.QVBoxLayout(self.desc_container)
+        desc_layout.setContentsMargins(0, 0, 0, 0)
+        desc_layout.addWidget(self.desc)
+        desc_layout.addStretch()
+
+        self.scroll = QtWidgets.QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.scroll.setWidget(self.desc_container)
+
+        QtWidgets.QScroller.grabGesture(
+            self.scroll.viewport(),
+            QtWidgets.QScroller.LeftMouseButtonGesture
+        )
+
+        layout.addWidget(self.scroll, stretch=1)
+
+
+
+
+        back = QtWidgets.QPushButton("← Back")
+        back.setFixedHeight(42)
+
+        def _close_detail():
+            self.current_key = None
+            self.hide()
+
+        back.clicked.connect(_close_detail)
+        layout.addWidget(back)
+
+
+        self.current_key = None
+    def show_score_detail(self, score, breakdown, how_to):
+        self.desc.clear()
+        #trend line disabled below
+        #self.trend.show()
+        #self.trend.set_data(self.parent().score_history)
+
+        self.current_key = "score"
+
+        # --- SCORE HEADER BLOCK ---
+        self.title.setText("IAQ Health Score")
+
+        score_color = "#4caf50" if score >= 80 else "#ff9800" if score >= 60 else "#f44336"
+
+        self.value.setText(f"{score}/100")
+        if score >= 80:
+            summary = "Healthy indoor air quality"
+        elif score >= 60:
+            summary = "Fair air quality — some improvements recommended"
+        else:
+            summary = "Poor air quality — action recommended"
+
+        self.value.setStyleSheet(
+            f"""
+            font-size:64px;
+            font-weight:800;
+            color:{score_color};
+            """
+        )
+
+        # Build breakdown text
+        html = []
+        html.append("<div style='font-size:16px; color:#cccccc;'>")
+
+        # Section header
+        html.append("<div style='font-size:20px; font-weight:600; color:white; margin-bottom:12px;'>Breakdown</div>")
+
+        for item in breakdown:
+            pts = item["points"]
+            sign = "−" if pts < 0 else "+"
+            color = item.get("color", "#888888")
+
+            html.append(
+                f"""
+                <div style="
+                    margin-bottom:10px;
+                    padding:12px;
+                    background:#151515;
+                    border-left:6px solid {color};
+                    border-radius:12px;
+                ">
+                    <div style="font-size:16px; font-weight:600; color:white;">
+                        {item['metric']}
+                    </div>
+                    <div style="font-size:14px; color:{color}; font-weight:700;">
+                        {sign}{abs(pts)} points
+                    </div>
+                    <div style="font-size:13px; color:#aaaaaa;">
+                        {item['label']}
+                    </div>
+                </div>
+                """
+            )
+
+        # How-to section
+        if how_to:
+            html.append("<div style='margin-top:18px; font-size:20px; font-weight:600; color:white;'>How to improve</div>")
+
+            for h in how_to:
+                html.append(
+                    f"""
+                    <div style="
+                        margin-top:8px;
+                        padding:12px;
+                        background:#151515;
+                        border-left:6px solid #3a7bd5;
+                        border-radius:12px;
+                        font-size:14px;
+                        color:#dddddd;
+                    ">
+                        {h}
+                    </div>
+                    """
+                )
+
+        html.append("</div>")
+        self.desc.setText("".join(html))
+        self.show()
+
+
+
+    def show_detail(self, key, title, value_text, color, description):
+        #self.trend.hide()
+        self.current_key = key
+        self.title.setText(title)
+        self.value.setText(value_text)
+        self.value.setStyleSheet(
+            f"font-size:56px; font-weight:bold; color:{color};"
+        )
+        self.desc.setText(description)
+        self.show()
+    def update_value(self, value_text, color=None):
+        if not self.isVisible():
+            return
+
+        self.value.setText(value_text)
+
+        if color:
+            self.value.setStyleSheet(
+                f"font-size:44px; font-weight:700; color:{color}; margin-bottom:6px;"
+            )
+
+
+
+# ---------------------------
+# CO Danger Fullscreen Overlay
+# ---------------------------
+class CODangerOverlay(QtWidgets.QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+
+        self.setGeometry(0, 0, WIDTH, HEIGHT)
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+
+        self.flash_state = False
+        self.flash_timer = QtCore.QTimer(self)
+        self.flash_timer.timeout.connect(self._flash)
+
+        self.hide()
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(36, 36, 36, 36)
+        layout.setSpacing(20)
+
+        title = QtWidgets.QLabel("⚠️ CARBON MONOXIDE — THREAT TO LIFE")
+        title.setAlignment(QtCore.Qt.AlignCenter)
+        title.setWordWrap(True)
+        title.setStyleSheet("font-size:32px; font-weight:bold;")
+
+        self.value = QtWidgets.QLabel("-- ppm")
+        self.value.setAlignment(QtCore.Qt.AlignCenter)
+        self.value.setStyleSheet("font-size:72px; font-weight:bold;")
+
+        msg = QtWidgets.QLabel(
+            "Dangerous carbon monoxide levels detected! Incapacitation likely! \n\n"
+            "• Ventilate immediately\n"
+            "• Shut off combustion sources\n"
+            "• Evacuate if levels remain high"
+        )
+        msg.setAlignment(QtCore.Qt.AlignCenter)
+        msg.setWordWrap(True)
+        msg.setStyleSheet("font-size:20px;")
+
+        dismiss = QtWidgets.QPushButton("Acknowledge / Dismiss")
+        dismiss.setFixedHeight(50)
+        dismiss.setStyleSheet("""
+            QPushButton {
+                background:#2a2a2a;
+                color:white;
+                font-size:18px;
+                border-radius:12px;
+            }
+            QPushButton:pressed {
+                background:#111;
+            }
+        """)
+        dismiss.clicked.connect(self.dismiss)
+
+        layout.addStretch()
+        layout.addWidget(title)
+        layout.addWidget(self.value)
+        layout.addWidget(msg)
+        layout.addStretch()
+        layout.addWidget(dismiss)
+
+    def show_level(self, co_ppm):
+        self.value.setText(f"{co_ppm} ppm")
+        self.show()
+        self.raise_()
+        self.flash_timer.start(500)  # flash every 500ms
+
+    def _flash(self):
+        self.flash_state = not self.flash_state
+        color = "#8b0000" if self.flash_state else "#b00000"
+        self.setStyleSheet(f"background-color:{color}; color:white;")
+
+    def dismiss(self):
+        """
+        User acknowledgment.
+        Real alarms will re-trigger automatically.
+        """
+        self.hide()
+        self.flash_timer.stop()
+
+        # Test mode exits permanently
+        if self.parent.co_test_mode:
+            self.parent.co_test_mode = False
+            self.parent.test_co_btn.setText("Test CO Danger")
+
+
+# ---------------------------
+# Dashboard
+# ---------------------------
+class Dashboard(QtWidgets.QWidget):
+    def __init__(self):
+        super().__init__()
+        # ---- SAFETY INIT (prevents race condition on fast user interaction) ----
+        self.last_co2 = 0
+        self.last_pm25 = 0
+        self.last_voc = 0
+        self.last_temp = 0
+        self.last_humidity = 0
+        self.last_co = 0
+        self.co_test_mode = False
+        # ---------------------------
+        # Survey mode state
+        # ---------------------------
+        self.survey_mode = False
+        self.survey_meta = {
+            "customer": None,
+            "job_id": None,
+            "start_ts": None,
+        }
+        # ---------------------------
+        # Survey storage paths
+        # ---------------------------
+        self.base_path = Path.home() / ".howlx_scout"
+        self.surveys_path = self.base_path / "surveys"
+        self.surveys_path.mkdir(parents=True, exist_ok=True)
+        
+        self.last_score = 100
+        self.last_breakdown = []
+        self.last_how_to = []
+        self.last_state = AlertState.NORMAL
+        from collections import deque
+        self.score_history = deque(maxlen=40)  # ~1 min rolling window
+        # Rolling history for smart advice
+        self.history = {
+            "pm25": deque(maxlen=40),
+            "co2": deque(maxlen=40),
+            "voc": deque(maxlen=40),
+            "co": deque(maxlen=40),
+            "humidity": deque(maxlen=40),
+}
+
+
+
+
+
+        # --------------------------------
+
+        self.setWindowTitle("HowlX IAQ Scout")
+        self.setFixedSize(WIDTH, HEIGHT)
+        self.move(0, 0)
+        self.setStyleSheet("background-color:#0d0d0d; color:white;")
+        self.setAttribute(QtCore.Qt.WA_AcceptTouchEvents, True)
+        self.setContentsMargins(0, 0, 0, 0)
+
+
+        # ---------------------------
+        # Root layout (LEFT + RIGHT)
+        # ---------------------------
+        self.root = QtWidgets.QHBoxLayout(self)
+        self.root.setContentsMargins(12, 12, 12, 12)
+        self.root.setSpacing(12)
+
+        # ===========================
+        # LEFT INFO PANEL
+        # ===========================
+        self.left_panel = QtWidgets.QFrame()
+        self.left_panel.setFixedWidth(260)
+        self.left_panel.setStyleSheet(
+            "background:#111111; border-radius:14px;"
+        )
+
+        left_layout = QtWidgets.QVBoxLayout(self.left_panel)
+        left_layout.setContentsMargins(16, 16, 16, 16)
+        left_layout.setSpacing(14)
+
+        # Logo (solid, visible)
+        logo = QtWidgets.QLabel()
+        logo_pix = QtGui.QPixmap("assets/logo.png").scaled(
+            200, 200,
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation
+        )
+        logo.setPixmap(logo_pix)
+        logo.setAlignment(QtCore.Qt.AlignCenter)
+        left_layout.addWidget(logo)
+        # State icon 
+        self.state_icon = QtWidgets.QLabel("✓")
+        self.state_icon.setAlignment(QtCore.Qt.AlignCenter)
+        self.state_icon.setStyleSheet("font-size:32px; color:#4caf50;")
+        left_layout.addWidget(self.state_icon)
+
+
+        # Dynamic info text
+        self.info_text = QtWidgets.QLabel("")
+        self.info_text.setWordWrap(True)
+        self.info_text.setStyleSheet(
+            "font-size:14px; color:#cccccc;"
+        )
+        left_layout.addWidget(self.info_text)
+        left_layout.addStretch()
+
+        self.root.addWidget(self.left_panel)
+
+        # ===========================
+        # RIGHT GRID PANEL
+        # ===========================
+        grid_container = QtWidgets.QWidget()
+        self.grid = QtWidgets.QGridLayout(grid_container)
+        self.grid.setSpacing(12)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+
+        self.tiles = {}
+        labels = [
+             "CO (ppm)",
+             "CO₂ (ppm)",
+             "PM2.5 (µg/m³)",
+             "VOC Index",
+             "Temp (°F)",
+             "Humidity (%)",
+             "Score"
+]
+
+
+        for i, label in enumerate(labels):
+            tile = self._build_tile(label)
+            self.grid.addWidget(tile, i // 3, i % 3)
+            self.tiles[label] = tile.findChild(QtWidgets.QLabel, "value")
+
+        self.root.addWidget(grid_container)
+
+        # ===========================
+        # Overlay (detail screens)
+        # ===========================
+        self.detail = DetailOverlay(self)
+        # ===========================
+        # CO danger overlay
+        # ===========================
+        self.co_danger = CODangerOverlay(self)
+        # ===========================
+        # Floating power menu
+        # ===========================
+        self.menu_open = False
+
+        # Main power button
+        self.power_btn = QtWidgets.QPushButton("⏻", self)
+        self.power_btn.setFixedSize(44, 44)
+        self.power_btn.move(WIDTH - 50, 6)
+        self.power_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1e1e1e;
+                color: white;
+                border-radius: 22px;
+                font-size: 20px;
+            }
+            QPushButton:pressed {
+                background-color: #444;
+            }
+        """)
+        self.power_btn.clicked.connect(self.toggle_power_menu)
+        self.power_btn.raise_()
+
+        # Dropdown menu container
+        self.power_menu = QtWidgets.QFrame(self)
+        self.power_menu.setGeometry(WIDTH - 190, 54, 180, 0)
+        self.power_menu.setStyleSheet("""
+            QFrame {
+                background-color: #1a1a1a;
+                border-radius: 12px;
+            }
+        """)
+        self.power_menu.hide()
+        self.power_menu.raise_()
+
+        menu_layout = QtWidgets.QVBoxLayout(self.power_menu)
+        menu_layout.setContentsMargins(10, 10, 10, 10)
+        menu_layout.setSpacing(8)
+
+        # Exit button
+        exit_btn = QtWidgets.QPushButton("Exit to Desktop")
+        exit_btn.setFixedHeight(36)
+        exit_btn.setStyleSheet("""
+            QPushButton {
+                background:#2a2a2a;
+                color:white;
+                border-radius:8px;
+                font-size:14px;
+            }
+            QPushButton:pressed {
+                background:#aa0000;
+            }
+        """)
+        exit_btn.clicked.connect(self.confirm_exit)
+       
+        # Test CO button
+        self.test_co_btn = QtWidgets.QPushButton("Test CO Danger")
+        self.test_co_btn.setFixedHeight(36)
+        self.test_co_btn.setStyleSheet("""
+            QPushButton {
+                background:#2a2a2a;
+                color:white;
+                border-radius:8px;
+                font-size:14px;
+            }
+            QPushButton:pressed {
+                background:#ff9800;
+            }
+        """)
+        self.test_co_btn.clicked.connect(self.toggle_co_test)
+
+        menu_layout.addWidget(exit_btn)
+        menu_layout.addWidget(self.test_co_btn)
+
+        # click handler
+        self.grid.itemAtPosition(0, 0).widget().mousePressEvent = lambda e: self.open_detail("co")
+        self.grid.itemAtPosition(0, 1).widget().mousePressEvent = lambda e: self.open_detail("co2")
+        self.grid.itemAtPosition(0, 2).widget().mousePressEvent = lambda e: self.open_detail("pm25")
+        self.grid.itemAtPosition(1, 0).widget().mousePressEvent = lambda e: self.open_detail("voc")
+        self.grid.itemAtPosition(1, 1).widget().mousePressEvent = lambda e: self.open_detail("temp")
+        self.grid.itemAtPosition(1, 2).widget().mousePressEvent = lambda e: self.open_detail("humidity")
+        self.grid.itemAtPosition(2, 0).widget().mousePressEvent = lambda e: self.open_detail("score")
+
+
+        # Fact rotation
+        self.fact_index = 0
+
+        # Update loop
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self.update_data)
+        self.timer.start(1500)
+
+    # ---------------------------
+    # Survey sample writer
+    # ---------------------------
+    def _record_survey_sample(self, d, score, state):
+        if not self.survey_meta["customer"] or not self.survey_meta["job_id"]:
+            return
+
+        job_path = (
+            self.surveys_path
+            / self.survey_meta["customer"]
+            / self.survey_meta["job_id"]
+        )
+        job_path.mkdir(parents=True, exist_ok=True)
+
+        data_file = job_path / "readings.csv"
+
+        header = "timestamp,co,co2,pm25,voc,temp,humidity,score,state\n"
+
+        row = (
+            f"{int(time.time())},"
+            f"{d['co']},{d['co2']},{d['pm25']},"
+            f"{d['voc']},{d['temp']},{d['humidity']},"
+            f"{score},{state.name}\n"
+        )
+
+        if not data_file.exists():
+            data_file.write_text(header)
+
+        with data_file.open("a") as f:
+            f.write(row)
+
+    # ---------------------------
+    # Exit confirmation
+    # ---------------------------
+    def confirm_exit(self):
+        dlg = QtWidgets.QMessageBox(self)
+        dlg.setWindowTitle("Exit HowlX Scout")
+        dlg.setText("Exit to desktop?")
+        dlg.setStandardButtons(
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+        )
+        dlg.setDefaultButton(QtWidgets.QMessageBox.No)
+        dlg.setStyleSheet("""
+            QMessageBox {
+                background-color: #0d0d0d;
+                color: white;
+                font-size: 16px;
+            }
+            QPushButton {
+                padding: 10px 18px;
+                font-size: 14px;
+            }
+        """)
+
+        if dlg.exec_() == QtWidgets.QMessageBox.Yes:
+            QtWidgets.QApplication.quit()
+
+    # ---------------------------
+    # Power menu toggle
+    # ---------------------------
+    def toggle_power_menu(self):
+        if self.menu_open:
+            self.power_menu.hide()
+            self.menu_open = False
+        else:
+            self.power_menu.setFixedHeight(96)
+            self.power_menu.show()
+            self.menu_open = True
+
+    # ---------------------------
+    # CO danger test toggle
+    # ---------------------------
+    def toggle_co_test(self):
+        if self.co_test_mode:
+            # Stop test mode
+            self.co_test_mode = False
+            self.co_danger.hide()
+            self.test_co_btn.setText("Test CO Danger")
+        else:
+            # Start test mode
+            self.co_test_mode = True
+            self.last_co = 50  # forced dangerous value
+            self.co_danger.show_level(self.last_co)
+            self.test_co_btn.setText("Stop CO Test")
+
+    # ---------------------------
+    # Tile builder
+    # ---------------------------
+    def _build_tile(self, label):
+        frame = QtWidgets.QFrame()
+        frame.setStyleSheet(
+            "background:#1a1a1a; border-radius:14px;"
+        )
+
+        layout = QtWidgets.QVBoxLayout(frame)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(6)
+
+        title = QtWidgets.QLabel(label)
+        title.setStyleSheet("font-size:16px; color:#aaaaaa;")
+
+        value = QtWidgets.QLabel("--")
+        value.setObjectName("value")
+        value.setStyleSheet("font-size:38px; font-weight:bold;")
+
+        badge = QtWidgets.QLabel("")
+        badge.setObjectName("badge")
+        badge.setStyleSheet("font-size:14px; color:#888888;")
+
+        layout.addWidget(title)
+        layout.addWidget(value)
+        layout.addWidget(badge)
+        layout.addStretch()
+
+        return frame
+
+
+
+    # ---------------------------
+    # Alert state UI
+    # ---------------------------
+    def update_alert_state_ui(self):
+        if self.last_state == AlertState.CRITICAL:
+            self.state_icon.setText("⛔")
+            self.state_icon.setStyleSheet("font-size:32px; color:#f44336;")
+
+        elif self.last_state == AlertState.WARNING:
+            self.state_icon.setText("⚠")
+            self.state_icon.setStyleSheet("font-size:32px; color:#ff9800;")
+
+        else:
+            self.state_icon.setText("✓")
+            self.state_icon.setStyleSheet("font-size:32px; color:#4caf50;")
+
+    # ---------------------------
+    # Data update
+    # ---------------------------
+    def update_data(self):
+        d = mock_readings()
+
+        # NEW unified evaluation
+        s, breakdown, how_to, state = evaluate_readings(d, self.history)
+        self.last_pm25_analysis = analyze_pm25(
+            self.last_pm25,
+            list(self.history["pm25"])
+        )
+        # Pattern-based smart advice
+        pattern_advice = smart_advice(self.history)
+        for msg in pattern_advice:
+            if msg not in how_to:
+                how_to.append(msg)
+
+
+        # Store for later use (score detail, advice engine, alerts)
+        self.last_score = s
+        self.score_history.append(s)
+        self.last_breakdown = breakdown
+        self.last_how_to = how_to
+        self.last_state = state
+        self.update_alert_state_ui()
+
+
+        self.tiles["CO₂ (ppm)"].setText(str(d["co2"]))
+        self.tiles["PM2.5 (µg/m³)"].setText(str(d["pm25"]))
+        self.tiles["VOC Index"].setText(str(d["voc"]))
+        self.tiles["Temp (°F)"].setText(str(d["temp"]))
+        self.tiles["Humidity (%)"].setText(str(d["humidity"]))
+        self.tiles["Score"].setText(f"{s}/100")
+        self.tiles["CO (ppm)"].setText(str(d["co"]))
+
+        
+
+        self.last_co2 = d["co2"]
+        self.last_pm25 = d["pm25"]
+        self.last_voc = d["voc"]
+        self.last_temp = d["temp"]
+        self.last_humidity = d["humidity"]
+        self.last_co = d["co"]
+        # ---------------------------
+        # Survey mode data capture
+        # ---------------------------
+        if self.survey_mode:
+            self._record_survey_sample(d, s, state)
+
+        # Update rolling history
+        for k in self.history:
+            self.history[k].append(d[k])
+
+
+        # Auto-trigger CO danger overlay (skip if test mode)
+        if not self.co_test_mode:
+            if self.last_co >= CO_DANGER_THRESHOLD:
+                self.co_danger.show_level(self.last_co)
+            else:
+                if self.co_danger.isVisible():
+                    self.co_danger.hide()
+        
+        if self.detail.isVisible():
+            if self.detail.current_key in ("pm25", "co2", "voc"):
+                self.open_detail(self.detail.current_key)
+
+        elif self.detail.current_key == "co2":
+            _, color, _ = co2_severity(self.last_co2)
+            self.detail.update_value(f"{self.last_co2} ppm", color)
+
+        elif self.detail.current_key == "voc":
+            color = "#4caf50" if self.last_voc <= 1 else "#ff9800" if self.last_voc <= 2 else "#f44336"
+            self.detail.update_value(str(self.last_voc), color)
+
+        elif self.detail.current_key == "temp":
+            self.detail.update_value(f"{self.last_temp} °F", "#03a9f4")
+
+        elif self.detail.current_key == "humidity":
+            _, color, _ = humidity_severity(self.last_humidity)
+            self.detail.update_value(f"{self.last_humidity} %", color)
+
+        elif self.detail.current_key == "co":
+            _, color, _ = co_severity(self.last_co)
+            self.detail.update_value(f"{self.last_co} ppm", color)
+
+        elif self.detail.current_key == "score":
+            self.detail.show_score_detail(
+                score=self.last_score,
+                breakdown=self.last_breakdown,
+                how_to=self.last_how_to
+            )
+
+
+
+        # ---------------------------
+        # Severity-based tile coloring
+        # ---------------------------
+        pm_label, pm_color, _ = pm25_severity(self.last_pm25)
+        co2_label, co2_color, _ = co2_severity(self.last_co2)
+        hum_label, hum_color, _ = humidity_severity(self.last_humidity)
+        co_label, co_color, _ = co_severity(self.last_co)
+
+        self.tiles["PM2.5 (µg/m³)"].setStyleSheet(
+        f"font-size:38px; font-weight:bold; color:{pm_color};"
+        )
+        self.tiles["CO₂ (ppm)"].setStyleSheet(
+            f"font-size:38px; font-weight:bold; color:{co2_color};"
+        )
+        self.tiles["Humidity (%)"].setStyleSheet(
+            f"font-size:38px; font-weight:bold; color:{hum_color};"
+        )
+        self.tiles["CO (ppm)"].setStyleSheet(
+            f"font-size:38px; font-weight:bold; color:{co_color};"
+        )
+
+        self.tiles["PM2.5 (µg/m³)"].parent().findChild(QtWidgets.QLabel, "badge").setText(pm_label)
+        self.tiles["CO₂ (ppm)"].parent().findChild(QtWidgets.QLabel, "badge").setText(co2_label)
+        self.tiles["Humidity (%)"].parent().findChild(QtWidgets.QLabel, "badge").setText(hum_label)
+        self.tiles["CO (ppm)"].parent().findChild(QtWidgets.QLabel, "badge").setText(co_label)
+
+
+        # Left-panel dynamic text
+        facts = [
+            "Good indoor air quality improves focus and sleep.",
+            "PM2.5 particles are smaller than a human hair.",
+            "High CO₂ can cause drowsiness and headaches.",
+            "Ventilation is the fastest IAQ improvement."
+        ]
+
+        fact = facts[self.fact_index]
+        self.fact_index = (self.fact_index + 1) % len(facts)
+
+        # ---------------------------
+        # Severity-driven commentary
+        # ---------------------------
+        _, _, pm_msg = pm25_severity(self.last_pm25)
+        _, _, co2_msg = co2_severity(self.last_co2)
+
+        if self.last_pm25 > 35:
+            icon = "⚠"
+            comment = pm_msg
+        elif self.last_co2 > 1200:
+            icon = "⚠"
+            comment = co2_msg
+        else:
+            icon = "✓"
+            comment = "Indoor air quality is within healthy ranges."
+
+        self.info_text.setText(
+            f"ⓘ {fact}\n\n{icon} {comment}"
+        )
+
+
+    # ---------------------------
+    # Tile actions
+    # ---------------------------
+    def open_detail(self, key):
+        if key == "pm25":
+            analysis = analyze_pm25(self.last_pm25, list(self.history["pm25"]))
+            pm_label, pm_color, _ = pm25_severity(self.last_pm25)
+
+            description = (
+                "<div style='font-size:16px;'>"
+
+                "<div style='margin-bottom:12px;'>"
+                "<div style='color:#aaaaaa; font-size:13px;'>SEVERITY</div>"
+                f"<div style='font-size:18px; font-weight:600; color:white;'>"
+                f"{analysis['status']}"
+                "</div></div>"
+
+                "<div style='margin-bottom:12px;'>"
+                "<div style='color:#aaaaaa; font-size:13px;'>CONFIDENCE</div>"
+                f"<div style='font-size:15px; color:#dddddd;'>"
+                f"{analysis['confidence']} · {analysis['window']}"
+                "</div></div>"
+
+                "<div style='margin-bottom:12px;'>"
+                "<div style='color:#aaaaaa; font-size:13px;'>SUMMARY</div>"
+                f"<div style='font-size:15px; color:#dddddd;'>"
+                f"{analysis['summary']}"
+                "</div></div>"
+
+                "<div style='margin-bottom:12px;'>"
+                "<div style='color:#aaaaaa; font-size:13px;'>HEALTH IMPACT</div>"
+                f"<div style='font-size:15px; color:#dddddd;'>"
+                f"{analysis['health']}"
+                "</div></div>"
+            )
+
+            # Append recommendations if present
+            if analysis.get("recommendations"):
+                description += (
+                    "<div style='margin-top:24px; padding-top:12px; border-top:1px solid #222;'>"
+                    "<div style='color:#aaaaaa; font-size:13px;'>RECOMMENDED ACTIONS</div>"
+                )
+                for r in analysis["recommendations"]:
+                    description += (
+                        "<div style='margin-top:8px; "
+                        "padding:10px 12px; "
+                        "border-left:4px solid #ff9800; "
+                        "background:#141414; "
+                        "border-radius:6px; "
+                        "color:#dddddd;'>"
+                        f"• {r}</div>"
+                    )
+                description += "</div>"
+
+            description += "</div>"
+
+            self.detail.show_detail(
+                key="pm25",
+                title="PM2.5 — Fine Particulate Matter",
+                value_text=f"{self.last_pm25} µg/m³",
+                color=pm_color,
+                description=description
+            )
+
+        elif key == "co2":
+            analysis = analyze_co2(self.last_co2, list(self.history["co2"]))
+            _, co2_color, _ = co2_severity(self.last_co2)
+
+            description = (
+                "<div style='font-size:16px;'>"
+
+                "<div style='margin-bottom:12px;'>"
+                "<div style='color:#aaaaaa; font-size:13px;'>SEVERITY</div>"
+                f"<div style='font-size:18px; font-weight:600; color:white;'>"
+                f"{analysis['status']}"
+                "</div></div>"
+
+                "<div style='margin-bottom:12px;'>"
+                "<div style='color:#aaaaaa; font-size:13px;'>CONFIDENCE</div>"
+                f"<div style='font-size:15px; color:#dddddd;'>"
+                f"{analysis['confidence']} · {analysis['window']}"
+                "</div></div>"
+
+                "<div style='margin-bottom:12px;'>"
+                "<div style='color:#aaaaaa; font-size:13px;'>SUMMARY</div>"
+                f"<div style='font-size:15px; color:#dddddd;'>"
+                f"{analysis['summary']}"
+                "</div></div>"
+
+                "<div style='margin-bottom:12px;'>"
+                "<div style='color:#aaaaaa; font-size:13px;'>HEALTH IMPACT</div>"
+                f"<div style='font-size:15px; color:#dddddd;'>"
+                f"{analysis['health']}"
+                "</div></div>"
+            )
+
+            if analysis.get("recommendations"):
+                description += (
+                    "<div style='margin-top:24px; padding-top:12px; border-top:1px solid #222;'>"
+                    "<div style='color:#aaaaaa; font-size:13px;'>RECOMMENDED ACTIONS</div>"
+                )
+                for r in analysis["recommendations"]:
+                    description += (
+                        "<div style='margin-top:8px; "
+                        "padding:10px 12px; "
+                        "border-left:4px solid #03a9f4; "
+                        "background:#141414; "
+                        "border-radius:6px; "
+                        "color:#dddddd;'>"
+                        f"• {r}</div>"
+                    )
+                description += "</div>"
+
+            description += "</div>"
+
+            self.detail.show_detail(
+                key="co2",
+                title="CO₂ — Carbon Dioxide",
+                value_text=f"{self.last_co2} ppm",
+                color=co2_color,
+                description=description
+            )
+
+
+        elif key == "voc":
+            analysis = analyze_voc(self.last_voc, list(self.history["voc"]))
+
+            # Color based on current value
+            if self.last_voc <= 1.0:
+                voc_color = "#4caf50"
+            elif self.last_voc <= 2.0:
+                voc_color = "#ff9800"
+            else:
+                voc_color = "#f44336"
+
+            description = (
+                "<div style='font-size:16px;'>"
+
+                "<div style='margin-bottom:12px;'>"
+                "<div style='color:#aaaaaa; font-size:13px;'>SEVERITY</div>"
+                f"<div style='font-size:18px; font-weight:600; color:white;'>"
+                f"{analysis['status']}"
+                "</div></div>"
+
+                "<div style='margin-bottom:12px;'>"
+                "<div style='color:#aaaaaa; font-size:13px;'>CONFIDENCE</div>"
+                f"<div style='font-size:15px; color:#dddddd;'>"
+                f"{analysis['confidence']} · {analysis['window']}"
+                "</div></div>"
+
+                "<div style='margin-bottom:12px;'>"
+                "<div style='color:#aaaaaa; font-size:13px;'>SUMMARY</div>"
+                f"<div style='font-size:15px; color:#dddddd;'>"
+                f"{analysis['summary']}"
+                "</div></div>"
+
+                "<div style='margin-bottom:12px;'>"
+                "<div style='color:#aaaaaa; font-size:13px;'>HEALTH IMPACT</div>"
+                f"<div style='font-size:15px; color:#dddddd;'>"
+                f"{analysis['health']}"
+                "</div></div>"
+            )
+
+            if analysis.get("recommendations"):
+                description += (
+                    "<div style='margin-top:24px; padding-top:12px; border-top:1px solid #222;'>"
+                    "<div style='color:#aaaaaa; font-size:13px;'>RECOMMENDED ACTIONS</div>"
+                )
+                for r in analysis["recommendations"]:
+                    description += (
+                        "<div style='margin-top:8px; "
+                        "padding:10px 12px; "
+                        "border-left:4px solid #9c27b0; "
+                        "background:#141414; "
+                        "border-radius:6px; "
+                        "color:#dddddd;'>"
+                        f"• {r}</div>"
+                    )
+                description += "</div>"
+
+            description += "</div>"
+
+            self.detail.show_detail(
+                key="voc",
+                title="VOC — Volatile Organic Compounds",
+                value_text=f"{self.last_voc}",
+                color=voc_color,
+                description=description
+            )
+
+
+        elif key == "temp":
+            self.detail.show_detail(
+                key="temp",
+                title="Temperature",
+                value_text=f"{self.last_temp} °F",
+                color="#03a9f4",
+                description=(
+                    "Indoor temperature affects comfort, productivity, "
+                    "and perceived air quality.\n\n"
+                    "Most people are comfortable between 68–75°F.\n\n"
+                    "Temperature can also influence humidity and VOC levels."
+                )
+            )
+
+        elif key == "humidity":
+            self.detail.show_detail(
+                key="humidity",
+                title="Relative Humidity",
+                value_text=f"{self.last_humidity} %",
+                color="#00bfa5",
+                description=(
+                    "Humidity impacts comfort, respiratory health, "
+                    "and mold growth.\n\n"
+                    "Recommended indoor range is 30–50%.\n\n"
+                    "Low humidity may cause dry skin; high humidity can "
+                    "encourage mold and dust mites."
+                )
+            )
+
+        elif key == "co":
+            label, color, msg = co_severity(self.last_co)
+            self.detail.show_detail(
+                key="co",
+                title="CO – Carbon Monoxide",
+                value_text=f"{self.last_co} ppm",
+                color=color,
+                description=(
+                    "Carbon monoxide is a colorless, odorless gas produced by "
+                    "incomplete combustion.\n\n"
+                    "High CO levels can be life-threatening.\n\n"
+                    f"{msg}"
+                )
+            )
+
+        elif key == "score":
+            self.detail.show_score_detail(
+                score=self.last_score,
+                breakdown=self.last_breakdown,
+                how_to=self.last_how_to
+            )
+
+
+# ---------------------------
+# App start
+# ---------------------------
+if __name__ == "__main__":
+    app = QtWidgets.QApplication(sys.argv)
+
+    w = Dashboard()
+    w.show()
+    sys.exit(app.exec_())
+
