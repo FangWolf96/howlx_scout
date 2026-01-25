@@ -472,6 +472,106 @@ def analyze_voc(current, history):
 
     return analysis
 
+def analyze_humidity(current, history):
+    analysis = {
+        "status": "",
+        "confidence": "Low",
+        "summary": "",
+        "health": "",
+        "recommendations": [],
+        "window": "Instant"
+    }
+
+    if not history or len(history) < 5:
+        analysis["status"] = "Initial reading"
+        analysis["summary"] = "Not enough data to determine humidity trends yet."
+        analysis["health"] = "Short-term comfort impact only."
+        return analysis
+
+    values = list(history)
+    avg = rolling_avg(values)
+
+    analysis["confidence"] = "High" if len(values) >= 20 else "Medium"
+    analysis["window"] = "Rolling (~1 min)"
+
+    if avg > 55:
+        analysis["status"] = "High"
+        analysis["summary"] = "Humidity has remained elevated."
+        analysis["health"] = "High humidity increases mold risk and discomfort."
+        analysis["recommendations"].extend([
+            "Reduce humidity with dehumidification.",
+            "Check HVAC condensate drainage and airflow."
+        ])
+
+    elif avg < 30:
+        analysis["status"] = "Low"
+        analysis["summary"] = "Humidity has remained low."
+        analysis["health"] = "Low humidity may cause dry skin and respiratory irritation."
+        analysis["recommendations"].append(
+            "Increase humidity using a humidifier or controlled ventilation."
+        )
+
+    else:
+        analysis["status"] = "Optimal"
+        analysis["summary"] = "Humidity is within the ideal comfort range."
+        analysis["health"] = "Supports comfort and respiratory health."
+
+    return analysis
+
+def analyze_temp(current, history):
+    analysis = {
+        "status": "",
+        "confidence": "Low",
+        "summary": "",
+        "health": "",
+        "recommendations": [],
+        "window": "Instant"
+    }
+
+    if not history or len(history) < 5:
+        analysis["status"] = "Initial reading"
+        analysis["summary"] = "Not enough data to determine temperature stability yet."
+        analysis["health"] = "Comfort impact only."
+        return analysis
+
+    values = list(history)
+    avg = rolling_avg(values)
+    swing = max(values) - min(values)
+
+    analysis["confidence"] = "High" if len(values) >= 20 else "Medium"
+    analysis["window"] = "Rolling (~1 min)"
+
+    if avg > 78:
+        analysis["status"] = "Warm"
+        analysis["summary"] = "Temperature is consistently above comfort range."
+        analysis["health"] = "May reduce comfort and increase fatigue."
+        analysis["recommendations"].append(
+            "Improve cooling or reduce internal heat loads."
+        )
+
+    elif avg < 68:
+        analysis["status"] = "Cool"
+        analysis["summary"] = "Temperature is consistently below comfort range."
+        analysis["health"] = "May cause discomfort or cold stress."
+        analysis["recommendations"].append(
+            "Increase heating or reduce drafts."
+        )
+
+    elif swing > 6:
+        analysis["status"] = "Unstable"
+        analysis["summary"] = "Noticeable temperature swings detected."
+        analysis["health"] = "Fluctuations may reduce comfort."
+        analysis["recommendations"].append(
+            "Check thermostat placement and HVAC cycling."
+        )
+
+    else:
+        analysis["status"] = "Comfortable"
+        analysis["summary"] = "Temperature is stable and within comfort range."
+        analysis["health"] = "Supports comfort and productivity."
+
+    return analysis
+
 
 
 
@@ -1442,23 +1542,26 @@ class Dashboard(QtWidgets.QWidget):
                 description=render_analysis_detail(analysis, accent="#9c27b0")
             )
         elif key == "temp":
+            analysis = analyze_temp(self.last_temp, list(self.history["temp"]))
             self.detail.show_detail(
                 key="temp",
                 title="Temperature",
                 value_text=f"{self.last_temp} °F",
                 color="#03a9f4",
-                description="Temperature affects comfort and perceived air quality."
+                description=render_analysis_detail(analysis, accent="#03a9f4")
             )
 
         elif key == "humidity":
-            label, color, msg = humidity_severity(self.last_humidity)
+            analysis = analyze_humidity(self.last_humidity, list(self.history["humidity"]))
+            _, color, _ = humidity_severity(self.last_humidity)
             self.detail.show_detail(
                 key="humidity",
                 title="Relative Humidity",
                 value_text=f"{self.last_humidity} %",
                 color=color,
-                description=msg
+                description=render_analysis_detail(analysis, accent="#00bcd4")
             )
+
 
         elif key == "co":
             label, color, msg = co_severity(self.last_co)
