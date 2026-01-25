@@ -572,6 +572,72 @@ def analyze_temp(current, history):
 
     return analysis
 
+def analyze_co(current, history):
+    """
+    Returns structured Carbon Monoxide (CO) analysis for detail view
+    """
+    analysis = {
+        "status": "",
+        "confidence": "Low",
+        "summary": "",
+        "health": "",
+        "recommendations": [],
+        "window": "Instant"
+    }
+
+    if not history or len(history) < 5:
+        analysis["status"] = "Initial reading"
+        analysis["summary"] = "Not enough data collected to determine CO patterns yet."
+        analysis["health"] = "Carbon monoxide exposure risk cannot yet be assessed."
+        return analysis
+
+    values = list(history)
+    avg = rolling_avg(values)
+    peaks = peak_count(values, 9)
+    sustained = sustained_high = sustained(values, 9, ratio=0.3)
+
+    analysis["confidence"] = "High" if len(values) >= 20 else "Medium"
+    analysis["window"] = "Rolling (~1 min)"
+
+    if current >= 35:
+        analysis["status"] = "Dangerous"
+        analysis["summary"] = "Carbon monoxide is currently at a dangerous level."
+        analysis["health"] = (
+            "High CO levels can cause dizziness, nausea, confusion, and loss of consciousness."
+        )
+        analysis["recommendations"].extend([
+            "Ventilate immediately and shut off combustion sources.",
+            "Evacuate the space if levels do not drop quickly.",
+            "Verify readings with a calibrated CO meter."
+        ])
+
+    elif sustained:
+        analysis["status"] = "Repeated detection"
+        analysis["summary"] = "Carbon monoxide has been detected repeatedly over time."
+        analysis["health"] = (
+            "Repeated low-level CO exposure can cause headaches, fatigue, and long-term health risks."
+        )
+        analysis["recommendations"].extend([
+            "Inspect combustion appliances and exhaust systems.",
+            "Ensure proper ventilation in the space."
+        ])
+
+    elif current >= 9:
+        analysis["status"] = "Elevated"
+        analysis["summary"] = "Carbon monoxide is currently elevated."
+        analysis["health"] = (
+            "Even moderate CO levels may cause symptoms in sensitive individuals."
+        )
+        analysis["recommendations"].append(
+            "Investigate possible combustion sources and improve ventilation."
+        )
+
+    else:
+        analysis["status"] = "Safe"
+        analysis["summary"] = "Carbon monoxide levels are within safe limits."
+        analysis["health"] = "No health effects expected at current levels."
+
+    return analysis
 
 
 
@@ -1566,13 +1632,15 @@ class Dashboard(QtWidgets.QWidget):
 
 
         elif key == "co":
-            label, color, msg = co_severity(self.last_co)
+            analysis = analyze_co(self.last_co, list(self.history["co"]))
+            _, color, _ = co_severity(self.last_co)
+
             self.detail.show_detail(
                 key="co",
                 title="Carbon Monoxide",
                 value_text=f"{self.last_co} ppm",
                 color=color,
-                description=msg
+                description=render_analysis_detail(analysis, accent="#f44336")
             )
 
         elif key == "score":
