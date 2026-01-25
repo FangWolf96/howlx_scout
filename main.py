@@ -1036,7 +1036,8 @@ class Dashboard(QtWidgets.QWidget):
         self.last_how_to = []
         self.last_state = AlertState.NORMAL
         from collections import deque
-        self.score_history = deque(maxlen=40)  # ~1 min rolling window
+        self.score_history = deque(maxlen=40)  # ~1 min rolling window\
+        
         # Rolling history for smart advice (AdviceEngine) 
         self.history = {
             "pm25": deque(maxlen=40),
