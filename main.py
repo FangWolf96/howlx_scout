@@ -744,6 +744,91 @@ def smart_advice(history):
 # ---------------------------
 # Base modal overlay & graphing
 # ---------------------------
+class IdleOverlay(QtWidgets.QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setGeometry(0, 0, WIDTH, HEIGHT)
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background-color:#0b0b0b;")
+        self.hide()
+
+        self.fact_index = 0
+        self.logo_left = True
+
+        # ---------- Layout ----------
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(QtCore.Qt.AlignCenter)
+
+        self.logo = QtWidgets.QLabel()
+        pix = QtGui.QPixmap("assets/logo.png").scaled(
+            220, 220,
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation
+        )
+        self.logo.setPixmap(pix)
+        self.logo.setAlignment(QtCore.Qt.AlignCenter)
+
+        self.text = QtWidgets.QLabel("")
+        self.text.setAlignment(QtCore.Qt.AlignCenter)
+        self.text.setWordWrap(True)
+        self.text.setStyleSheet(
+            "font-size:22px; color:#dddddd; padding:0 60px;"
+        )
+
+        layout.addWidget(self.logo)
+        layout.addSpacing(20)
+        layout.addWidget(self.text)
+
+        # ---------- Effects ----------
+        self.text_fx = QtWidgets.QGraphicsOpacityEffect(self.text)
+        self.text.setGraphicsEffect(self.text_fx)
+        self.text_fx.setOpacity(1.0)
+
+        # ---------- Data ----------
+        self.facts = [
+            "PM2.5 particles are small enough to enter the bloodstream.",
+            "Poor ventilation can cause fatigue and headaches.",
+            "Carbon monoxide is odorless and invisible.",
+            "Ventilation and filtration solve different IAQ problems.",
+            "Indoor air quality affects sleep and focus."
+        ]
+        self.text.setText(self.facts[0])
+
+        # ---------- Timer ----------
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self.next_fact)
+
+    def start(self):
+        self.show()
+        self.raise_()
+        self.timer.start(5000)
+
+    def stop(self):
+        self.timer.stop()
+        self.hide()
+
+    def next_fact(self):
+        fade_out = QtCore.QPropertyAnimation(self.text_fx, b"opacity")
+        fade_out.setDuration(600)
+        fade_out.setStartValue(1.0)
+        fade_out.setEndValue(0.0)
+        fade_out.finished.connect(self._swap)
+        fade_out.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+
+    def _swap(self):
+        self.fact_index = (self.fact_index + 1) % len(self.facts)
+        self.text.setText(self.facts[self.fact_index])
+
+        fade_in = QtCore.QPropertyAnimation(self.text_fx, b"opacity")
+        fade_in.setDuration(600)
+        fade_in.setStartValue(0.0)
+        fade_in.setEndValue(1.0)
+        fade_in.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+
+    def mousePressEvent(self, event):
+        self.parent().exit_idle_mode()
+
 class TrendGraph(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1113,9 +1198,27 @@ class Dashboard(QtWidgets.QWidget):
             "humidity": deque(maxlen=40),
             "temp": deque(maxlen=40),
 }
+    # idle enter / exit helpers
+    def enter_idle_mode(self):
+        if self.idle_active:
+            return
+        if self.detail.isVisible() or self.co_danger.isVisible():
+            return
 
+        self.idle_active = True
+        self.idle_overlay.start()
 
+    def exit_idle_mode(self):
+        if not self.idle_active:
+            return
 
+        self.idle_active = False
+        self.idle_overlay.stop()
+    #TEMP manual trigger (for testing only)   
+    def mousePressEvent(self, event):
+        # Top-left corner tap = idle mode
+        if event.pos().x() < 40 and event.pos().y() < 40:
+            self.enter_idle_mode()
 
 
         # --------------------------------
@@ -1207,6 +1310,8 @@ class Dashboard(QtWidgets.QWidget):
         # Overlay (detail screens)
         # ===========================
         self.detail = DetailOverlay(self)
+        self.idle_overlay = IdleOverlay(self)
+        self.idle_active = False
         # ===========================
         # CO danger overlay
         # ===========================
