@@ -1292,6 +1292,10 @@ class Dashboard(QtWidgets.QWidget):
         self.detail = DetailOverlay(self)
         self.idle_overlay = IdleOverlay(self)
         # ===========================
+        # CO danger overlay
+        # ===========================
+        self.co_danger = CODangerOverlay(self)
+        # ===========================
         # Idle / Attract mode timer
         # ===========================
         self.idle_timer = QtCore.QTimer(self)
@@ -1308,10 +1312,7 @@ class Dashboard(QtWidgets.QWidget):
         self.timer.start(1500)
 
         self.idle_active = False
-        # ===========================
-        # CO danger overlay
-        # ===========================
-        self.co_danger = CODangerOverlay(self)
+
         # ===========================
         # Floating power menu
         # ===========================
