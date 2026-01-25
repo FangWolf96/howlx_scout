@@ -611,7 +611,7 @@ def analyze_co(current, history):
             "Verify readings with a calibrated CO meter."
         ])
 
-    elif sustained:
+    elif sustained_high:
         analysis["status"] = "Repeated detection"
         analysis["summary"] = "Carbon monoxide has been detected repeatedly over time."
         analysis["health"] = (
@@ -1198,27 +1198,7 @@ class Dashboard(QtWidgets.QWidget):
             "humidity": deque(maxlen=40),
             "temp": deque(maxlen=40),
 }
-    # idle enter / exit helpers
-    def enter_idle_mode(self):
-        if self.idle_active:
-            return
-        if self.detail.isVisible() or self.co_danger.isVisible():
-            return
-
-        self.idle_active = True
-        self.idle_overlay.start()
-
-    def exit_idle_mode(self):
-        if not self.idle_active:
-            return
-
-        self.idle_active = False
-        self.idle_overlay.stop()
-    #TEMP manual trigger (for testing only)   
-    def mousePressEvent(self, event):
-        # Top-left corner tap = idle mode
-        if event.pos().x() < 40 and event.pos().y() < 40:
-            self.enter_idle_mode()
+   
 
 
         # --------------------------------
@@ -1311,6 +1291,22 @@ class Dashboard(QtWidgets.QWidget):
         # ===========================
         self.detail = DetailOverlay(self)
         self.idle_overlay = IdleOverlay(self)
+        # ===========================
+        # Idle / Attract mode timer
+        # ===========================
+        self.idle_timer = QtCore.QTimer(self)
+        self.idle_timer.setSingleShot(True)
+        self.idle_timer.timeout.connect(self.enter_idle_mode)
+
+        self.reset_idle_timer()
+        # ---------------------------
+        # Update loop (SINGLE INSTANCE)
+        # ---------------------------
+        self.fact_index = 0
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self.update_data)
+        self.timer.start(1500)
+
         self.idle_active = False
         # ===========================
         # CO danger overlay
@@ -1398,15 +1394,6 @@ class Dashboard(QtWidgets.QWidget):
         self.grid.itemAtPosition(1, 1).widget().mousePressEvent = lambda e: self.open_detail("temp")
         self.grid.itemAtPosition(1, 2).widget().mousePressEvent = lambda e: self.open_detail("humidity")
         self.grid.itemAtPosition(2, 0).widget().mousePressEvent = lambda e: self.open_detail("score")
-
-
-        # Fact rotation
-        self.fact_index = 0
-
-        # Update loop
-        self.timer = QtCore.QTimer(self)
-        self.timer.timeout.connect(self.update_data)
-        self.timer.start(1500)
 
     # ---------------------------
     # Survey sample writer
@@ -1669,10 +1656,35 @@ class Dashboard(QtWidgets.QWidget):
         )
 
 
+
+    # ---------------------------
+    # Idle mode helpers
+    # ---------------------------
+    def reset_idle_timer(self):
+        # Never idle over critical overlays
+        if self.detail.isVisible() or self.co_danger.isVisible():
+            return
+        self.idle_timer.start(30000)  # 30 seconds (tune later)
+
+    def enter_idle_mode(self):
+        if self.idle_active:
+            return
+        if self.detail.isVisible() or self.co_danger.isVisible():
+            return
+        self.idle_active = True
+        self.idle_overlay.start()
+
+    def exit_idle_mode(self):
+        if not self.idle_active:
+            return
+        self.idle_active = False
+        self.idle_overlay.stop()
+        self.reset_idle_timer()
     # ---------------------------
     # Tile actions
     # ---------------------------
     def open_detail(self, key):
+        self.reset_idle_timer()
         if key == "pm25":
             analysis = analyze_pm25(self.last_pm25, list(self.history["pm25"]))
             _, pm_color, _ = pm25_severity(self.last_pm25)
