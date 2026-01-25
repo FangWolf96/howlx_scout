@@ -594,7 +594,7 @@ def analyze_co(current, history):
     values = list(history)
     avg = rolling_avg(values)
     peaks = peak_count(values, 9)
-    sustained = sustained_high = sustained(values, 9, ratio=0.3)
+    sustained_high = sustained(values, 9, ratio=0.3)
 
     analysis["confidence"] = "High" if len(values) >= 20 else "Medium"
     analysis["window"] = "Rolling (~1 min)"
