@@ -475,6 +475,58 @@ def analyze_voc(current, history):
 
 
 
+
+# ---------------------------
+# Shared metric detail renderer
+# ---------------------------
+def render_analysis_detail(analysis, accent="#ff9800"):
+    html = (
+        "<div style='font-size:16px;'>"
+
+        "<div style='margin-bottom:12px;'>"
+        "<div style='color:#aaaaaa; font-size:13px;'>SEVERITY</div>"
+        f"<div style='font-size:18px; font-weight:600; color:white;'>"
+        f"{analysis['status']}"
+        "</div></div>"
+
+        "<div style='margin-bottom:12px;'>"
+        "<div style='color:#aaaaaa; font-size:13px;'>CONFIDENCE</div>"
+        f"<div style='font-size:15px; color:#dddddd;'>"
+        f"{analysis['confidence']} · {analysis['window']}"
+        "</div></div>"
+
+        "<div style='margin-bottom:12px;'>"
+        "<div style='color:#aaaaaa; font-size:13px;'>SUMMARY</div>"
+        f"<div style='font-size:15px; color:#dddddd;'>"
+        f"{analysis['summary']}"
+        "</div></div>"
+
+        "<div style='margin-bottom:12px;'>"
+        "<div style='color:#aaaaaa; font-size:13px;'>HEALTH IMPACT</div>"
+        f"<div style='font-size:15px; color:#dddddd;'>"
+        f"{analysis['health']}"
+        "</div></div>"
+    )
+
+    if analysis.get("recommendations"):
+        html += (
+            "<div style='margin-top:24px; padding-top:12px; border-top:1px solid #222;'>"
+            "<div style='color:#aaaaaa; font-size:13px;'>RECOMMENDED ACTIONS</div>"
+        )
+        for r in analysis["recommendations"]:
+            html += (
+                "<div style='margin-top:8px; "
+                f"border-left:4px solid {accent}; "
+                "padding:10px 12px; "
+                "background:#141414; "
+                "border-radius:6px; "
+                "color:#dddddd;'>"
+                f"• {r}</div>"
+            )
+        html += "</div>"
+
+    html += "</div>"
+    return html
 # ---------------------------
 # Smart advice engine (pattern-based)
 # ---------------------------
@@ -1226,9 +1278,9 @@ class Dashboard(QtWidgets.QWidget):
         # NEW unified evaluation
         s, breakdown, how_to, state = evaluate_readings(d, self.history)
         self.last_pm25_analysis = analyze_pm25(
-            self.last_pm25,
+            d["pm25"],
             list(self.history["pm25"])
-        )
+)
         # Pattern-based smart advice
         pattern_advice = smart_advice(self.history)
         for msg in pattern_advice:
@@ -1276,39 +1328,12 @@ class Dashboard(QtWidgets.QWidget):
         if not self.co_test_mode:
             if self.last_co >= CO_DANGER_THRESHOLD:
                 self.co_danger.show_level(self.last_co)
-            else:
-                if self.co_danger.isVisible():
-                    self.co_danger.hide()
-        
-        if self.detail.isVisible():
-            if self.detail.current_key in ("pm25", "co2", "voc"):
-                self.open_detail(self.detail.current_key)
+            elif self.co_danger.isVisible():
+                self.co_danger.hide()
 
-        elif self.detail.current_key == "co2":
-            _, color, _ = co2_severity(self.last_co2)
-            self.detail.update_value(f"{self.last_co2} ppm", color)
-
-        elif self.detail.current_key == "voc":
-            color = "#4caf50" if self.last_voc <= 1 else "#ff9800" if self.last_voc <= 2 else "#f44336"
-            self.detail.update_value(str(self.last_voc), color)
-
-        elif self.detail.current_key == "temp":
-            self.detail.update_value(f"{self.last_temp} °F", "#03a9f4")
-
-        elif self.detail.current_key == "humidity":
-            _, color, _ = humidity_severity(self.last_humidity)
-            self.detail.update_value(f"{self.last_humidity} %", color)
-
-        elif self.detail.current_key == "co":
-            _, color, _ = co_severity(self.last_co)
-            self.detail.update_value(f"{self.last_co} ppm", color)
-
-        elif self.detail.current_key == "score":
-            self.detail.show_score_detail(
-                score=self.last_score,
-                breakdown=self.last_breakdown,
-                how_to=self.last_how_to
-            )
+        # --- Live detail refresh (single source of truth) ---
+        if self.detail.isVisible() and self.detail.current_key:
+            self.open_detail(self.detail.current_key)
 
 
 
@@ -1377,128 +1402,31 @@ class Dashboard(QtWidgets.QWidget):
     def open_detail(self, key):
         if key == "pm25":
             analysis = analyze_pm25(self.last_pm25, list(self.history["pm25"]))
-            pm_label, pm_color, _ = pm25_severity(self.last_pm25)
-
-            description = (
-                "<div style='font-size:16px;'>"
-
-                "<div style='margin-bottom:12px;'>"
-                "<div style='color:#aaaaaa; font-size:13px;'>SEVERITY</div>"
-                f"<div style='font-size:18px; font-weight:600; color:white;'>"
-                f"{analysis['status']}"
-                "</div></div>"
-
-                "<div style='margin-bottom:12px;'>"
-                "<div style='color:#aaaaaa; font-size:13px;'>CONFIDENCE</div>"
-                f"<div style='font-size:15px; color:#dddddd;'>"
-                f"{analysis['confidence']} · {analysis['window']}"
-                "</div></div>"
-
-                "<div style='margin-bottom:12px;'>"
-                "<div style='color:#aaaaaa; font-size:13px;'>SUMMARY</div>"
-                f"<div style='font-size:15px; color:#dddddd;'>"
-                f"{analysis['summary']}"
-                "</div></div>"
-
-                "<div style='margin-bottom:12px;'>"
-                "<div style='color:#aaaaaa; font-size:13px;'>HEALTH IMPACT</div>"
-                f"<div style='font-size:15px; color:#dddddd;'>"
-                f"{analysis['health']}"
-                "</div></div>"
-            )
-
-            # Append recommendations if present
-            if analysis.get("recommendations"):
-                description += (
-                    "<div style='margin-top:24px; padding-top:12px; border-top:1px solid #222;'>"
-                    "<div style='color:#aaaaaa; font-size:13px;'>RECOMMENDED ACTIONS</div>"
-                )
-                for r in analysis["recommendations"]:
-                    description += (
-                        "<div style='margin-top:8px; "
-                        "padding:10px 12px; "
-                        "border-left:4px solid #ff9800; "
-                        "background:#141414; "
-                        "border-radius:6px; "
-                        "color:#dddddd;'>"
-                        f"• {r}</div>"
-                    )
-                description += "</div>"
-
-            description += "</div>"
+            _, pm_color, _ = pm25_severity(self.last_pm25)
 
             self.detail.show_detail(
                 key="pm25",
                 title="PM2.5 — Fine Particulate Matter",
                 value_text=f"{self.last_pm25} µg/m³",
                 color=pm_color,
-                description=description
+                description=render_analysis_detail(analysis, accent="#ff9800")
             )
 
         elif key == "co2":
             analysis = analyze_co2(self.last_co2, list(self.history["co2"]))
             _, co2_color, _ = co2_severity(self.last_co2)
 
-            description = (
-                "<div style='font-size:16px;'>"
-
-                "<div style='margin-bottom:12px;'>"
-                "<div style='color:#aaaaaa; font-size:13px;'>SEVERITY</div>"
-                f"<div style='font-size:18px; font-weight:600; color:white;'>"
-                f"{analysis['status']}"
-                "</div></div>"
-
-                "<div style='margin-bottom:12px;'>"
-                "<div style='color:#aaaaaa; font-size:13px;'>CONFIDENCE</div>"
-                f"<div style='font-size:15px; color:#dddddd;'>"
-                f"{analysis['confidence']} · {analysis['window']}"
-                "</div></div>"
-
-                "<div style='margin-bottom:12px;'>"
-                "<div style='color:#aaaaaa; font-size:13px;'>SUMMARY</div>"
-                f"<div style='font-size:15px; color:#dddddd;'>"
-                f"{analysis['summary']}"
-                "</div></div>"
-
-                "<div style='margin-bottom:12px;'>"
-                "<div style='color:#aaaaaa; font-size:13px;'>HEALTH IMPACT</div>"
-                f"<div style='font-size:15px; color:#dddddd;'>"
-                f"{analysis['health']}"
-                "</div></div>"
-            )
-
-            if analysis.get("recommendations"):
-                description += (
-                    "<div style='margin-top:24px; padding-top:12px; border-top:1px solid #222;'>"
-                    "<div style='color:#aaaaaa; font-size:13px;'>RECOMMENDED ACTIONS</div>"
-                )
-                for r in analysis["recommendations"]:
-                    description += (
-                        "<div style='margin-top:8px; "
-                        "padding:10px 12px; "
-                        "border-left:4px solid #03a9f4; "
-                        "background:#141414; "
-                        "border-radius:6px; "
-                        "color:#dddddd;'>"
-                        f"• {r}</div>"
-                    )
-                description += "</div>"
-
-            description += "</div>"
-
             self.detail.show_detail(
                 key="co2",
                 title="CO₂ — Carbon Dioxide",
                 value_text=f"{self.last_co2} ppm",
                 color=co2_color,
-                description=description
+                description=render_analysis_detail(analysis, accent="#03a9f4")
             )
-
 
         elif key == "voc":
             analysis = analyze_voc(self.last_voc, list(self.history["voc"]))
 
-            # Color based on current value
             if self.last_voc <= 1.0:
                 voc_color = "#4caf50"
             elif self.last_voc <= 2.0:
@@ -1506,104 +1434,40 @@ class Dashboard(QtWidgets.QWidget):
             else:
                 voc_color = "#f44336"
 
-            description = (
-                "<div style='font-size:16px;'>"
-
-                "<div style='margin-bottom:12px;'>"
-                "<div style='color:#aaaaaa; font-size:13px;'>SEVERITY</div>"
-                f"<div style='font-size:18px; font-weight:600; color:white;'>"
-                f"{analysis['status']}"
-                "</div></div>"
-
-                "<div style='margin-bottom:12px;'>"
-                "<div style='color:#aaaaaa; font-size:13px;'>CONFIDENCE</div>"
-                f"<div style='font-size:15px; color:#dddddd;'>"
-                f"{analysis['confidence']} · {analysis['window']}"
-                "</div></div>"
-
-                "<div style='margin-bottom:12px;'>"
-                "<div style='color:#aaaaaa; font-size:13px;'>SUMMARY</div>"
-                f"<div style='font-size:15px; color:#dddddd;'>"
-                f"{analysis['summary']}"
-                "</div></div>"
-
-                "<div style='margin-bottom:12px;'>"
-                "<div style='color:#aaaaaa; font-size:13px;'>HEALTH IMPACT</div>"
-                f"<div style='font-size:15px; color:#dddddd;'>"
-                f"{analysis['health']}"
-                "</div></div>"
-            )
-
-            if analysis.get("recommendations"):
-                description += (
-                    "<div style='margin-top:24px; padding-top:12px; border-top:1px solid #222;'>"
-                    "<div style='color:#aaaaaa; font-size:13px;'>RECOMMENDED ACTIONS</div>"
-                )
-                for r in analysis["recommendations"]:
-                    description += (
-                        "<div style='margin-top:8px; "
-                        "padding:10px 12px; "
-                        "border-left:4px solid #9c27b0; "
-                        "background:#141414; "
-                        "border-radius:6px; "
-                        "color:#dddddd;'>"
-                        f"• {r}</div>"
-                    )
-                description += "</div>"
-
-            description += "</div>"
-
             self.detail.show_detail(
                 key="voc",
                 title="VOC — Volatile Organic Compounds",
-                value_text=f"{self.last_voc}",
+                value_text=str(self.last_voc),
                 color=voc_color,
-                description=description
+                description=render_analysis_detail(analysis, accent="#9c27b0")
             )
-
-
         elif key == "temp":
             self.detail.show_detail(
                 key="temp",
                 title="Temperature",
                 value_text=f"{self.last_temp} °F",
                 color="#03a9f4",
-                description=(
-                    "Indoor temperature affects comfort, productivity, "
-                    "and perceived air quality.\n\n"
-                    "Most people are comfortable between 68–75°F.\n\n"
-                    "Temperature can also influence humidity and VOC levels."
-                )
+                description="Temperature affects comfort and perceived air quality."
             )
 
         elif key == "humidity":
+            label, color, msg = humidity_severity(self.last_humidity)
             self.detail.show_detail(
                 key="humidity",
                 title="Relative Humidity",
                 value_text=f"{self.last_humidity} %",
-                color="#00bfa5",
-                description=(
-                    "Humidity impacts comfort, respiratory health, "
-                    "and mold growth.\n\n"
-                    "Recommended indoor range is 30–50%.\n\n"
-                    "Low humidity may cause dry skin; high humidity can "
-                    "encourage mold and dust mites."
-                )
+                color=color,
+                description=msg
             )
 
         elif key == "co":
             label, color, msg = co_severity(self.last_co)
             self.detail.show_detail(
                 key="co",
-                title="CO – Carbon Monoxide",
+                title="Carbon Monoxide",
                 value_text=f"{self.last_co} ppm",
                 color=color,
-                description=(
-                    "Carbon monoxide is a colorless, odorless gas produced by "
-                    "incomplete combustion.\n\n"
-                    "High CO levels can be life-threatening.\n\n"
-                    f"{msg}"
-                )
+                description=msg
             )
 
         elif key == "score":
@@ -1612,7 +1476,6 @@ class Dashboard(QtWidgets.QWidget):
                 breakdown=self.last_breakdown,
                 how_to=self.last_how_to
             )
-
 
 # ---------------------------
 # App start
