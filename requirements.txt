@@ -1,6 +1,3 @@
-# ---- Core GUI ----
-PyQt5==5.15.10
-
 # ---- Adafruit Blinka stack (I2C/GPIO abstraction) ----
 adafruit-blinka>=8.50.0
 adafruit-platformdetect>=3.70.0
