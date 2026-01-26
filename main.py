@@ -88,7 +88,7 @@ def evaluate_readings(d, history):
     # -------------------------
     if d["co"] >= CO_DANGER_THRESHOLD:
         state = AlertState.CRITICAL
-    elif d["pm25"] > 35 or d["co2"] > 1200 or d["voc"] > 2.0 or d["co"] >= 9:
+    elif d["pm25"] > 35 or d["co2"] > 1200 or ((d.get("voc") or 0.0) > 2.0) or d["co"] >= 9:
         state = AlertState.WARNING
     else:
         state = AlertState.NORMAL
@@ -144,14 +144,17 @@ def evaluate_readings(d, history):
             "color": penalty_color(co2_pen),
         })
 
+
     # -------------------------
-    # VOC penalty
+    # VOC penalty (VOC can be None during warmup)
     # -------------------------
+    voc_val = d.get("voc") or 0.0
+
     voc_pen = 0
-    if d["voc"] > 2.0:
+    if voc_val > 2.0:
         voc_pen = -20
         how.append("Reduce VOC sources (cleaners/solvents); increase ventilation; consider activated carbon filtration.")
-    elif d["voc"] > 1.0:
+    elif voc_val > 1.0:
         voc_pen = -10
         how.append("Ventilate and reduce VOC sources (fragrances, sprays, harsh cleaners).")
 
@@ -160,10 +163,10 @@ def evaluate_readings(d, history):
         breakdown.append({
             "metric": "VOC",
             "points": voc_pen,
-            "label": "High" if d["voc"] > 2.0 else "Elevated",
+            "label": "High" if voc_val > 2.0 else "Elevated",
             "color": penalty_color(voc_pen),
         })
-
+        
     # -------------------------
     # CO penalty (dominant safety factor)
     # -------------------------
@@ -717,7 +720,7 @@ def smart_advice(history):
             "CO₂ has remained elevated over time, suggesting insufficient ventilation for current occupancy."
         )
 
-    voc_peaks = peak_count(history["voc"], 2.0)
+    voc_peaks = peak_count([v for v in history["voc"] if isinstance(v, (int, float))], 2.0)
     if voc_peaks >= 3:
         advice.append(
             "Repeated VOC spikes detected, commonly linked to cleaners, fragrances, or off-gassing materials."
@@ -1166,6 +1169,8 @@ class Dashboard(QtWidgets.QWidget):
         self.last_humidity = 0
         self.last_co = 0
         self.co_test_mode = False
+        self.USE_REAL_SENSORS = False
+
         # ---------------------------
         # Survey mode state
         # ---------------------------
@@ -1417,7 +1422,7 @@ class Dashboard(QtWidgets.QWidget):
         row = (
             f"{int(time.time())},"
             f"{d['co']},{d['co2']},{d['pm25']},"
-            f"{d['voc']},{d['temp']},{d['humidity']},"
+            f"{'' if d.get('voc') is None else d['voc']},{d['temp']},{d['humidity']},"
             f"{score},{state.name}\n"
         )
 
@@ -1511,7 +1516,54 @@ class Dashboard(QtWidgets.QWidget):
         layout.addStretch()
 
         return frame
+    # ---------------------------
+    # Left Panel UI 
+    # ---------------------------
 
+    def update_left_panel_context(self, d, score, state, how_to):
+        """
+        Contextual suggestions panel under the logo.
+        """
+        lines = []
+
+        if state == AlertState.CRITICAL:
+            lines.append("⛔ Immediate action recommended.")
+        elif state == AlertState.WARNING:
+            lines.append("⚠ Air quality needs attention.")
+        else:
+            lines.append("✓ Air quality looks good.")
+
+        drivers = []
+        if d.get("co", 0) >= 9:
+            drivers.append(f"CO {d['co']} ppm")
+        if d.get("pm25", 0) > 12:
+            drivers.append(f"PM2.5 {d['pm25']} µg/m³")
+        if d.get("co2", 0) > 800:
+            drivers.append(f"CO₂ {d['co2']} ppm")
+        if d.get("voc") is not None and (d.get("voc") or 0.0) > 1.0:
+            drivers.append(f"VOC {d['voc']}")
+
+        if drivers:
+            lines.append("Drivers: " + " · ".join(drivers[:2]))
+
+        lines.append(f"IAQ Score: {score}/100")
+
+        suggestions = []
+        for s in (how_to or []):
+            s = (s or "").strip()
+            if s and s not in suggestions:
+                suggestions.append(s)
+        suggestions = suggestions[:3]
+
+        lines.append("")
+        lines.append("Suggestions:")
+        if suggestions:
+            for s in suggestions:
+                lines.append(f"• {s}")
+        else:
+            lines.append("• Keep monitoring. No changes recommended right now.")
+
+        self.info_text.setText("\n".join(lines))
 
 
     # ---------------------------
@@ -1533,8 +1585,18 @@ class Dashboard(QtWidgets.QWidget):
     # ---------------------------
     # Data update
     # ---------------------------
+    def safe_readings(self):
+        if not getattr(self, "USE_REAL_SENSORS", False):
+            return mock_readings()
+        try:
+            return read_sensors()
+        except Exception as e:
+            print("read_sensors() failed:", repr(e))
+            return mock_readings()
+
     def update_data(self):
-        d = mock_readings()
+        d = self.safe_readings()
+
 
         # NEW unified evaluation
         s, breakdown, how_to, state = evaluate_readings(d, self.history)
@@ -1560,7 +1622,7 @@ class Dashboard(QtWidgets.QWidget):
 
         self.tiles["CO₂ (ppm)"].setText(str(d["co2"]))
         self.tiles["PM2.5 (µg/m³)"].setText(str(d["pm25"]))
-        self.tiles["VOC Index"].setText(str(d["voc"]))
+        self.tiles["VOC Index"].setText("--" if d.get("voc") is None else str(d["voc"]))
         self.tiles["Temp (°F)"].setText(str(d["temp"]))
         self.tiles["Humidity (%)"].setText(str(d["humidity"]))
         self.tiles["Score"].setText(f"{s}/100")
@@ -1570,7 +1632,7 @@ class Dashboard(QtWidgets.QWidget):
 
         self.last_co2 = d["co2"]
         self.last_pm25 = d["pm25"]
-        self.last_voc = d["voc"]
+        self.last_voc = d.get("voc")
         self.last_temp = d["temp"]
         self.last_humidity = d["humidity"]
         self.last_co = d["co"]
@@ -1582,7 +1644,10 @@ class Dashboard(QtWidgets.QWidget):
 
         # Update rolling history
         for k in self.history:
-            self.history[k].append(d[k])
+            val = d.get(k)
+            if val is None:
+                continue
+            self.history[k].append(val)
 
 
         # Auto-trigger CO danger overlay (skip if test mode)
@@ -1624,37 +1689,8 @@ class Dashboard(QtWidgets.QWidget):
         self.tiles["Humidity (%)"].parent().findChild(QtWidgets.QLabel, "badge").setText(hum_label)
         self.tiles["CO (ppm)"].parent().findChild(QtWidgets.QLabel, "badge").setText(co_label)
 
-
-        # Left-panel dynamic text
-        facts = [
-            "Good indoor air quality improves focus and sleep.",
-            "PM2.5 particles are smaller than a human hair.",
-            "High CO₂ can cause drowsiness and headaches.",
-            "Ventilation is the fastest IAQ improvement."
-        ]
-
-        fact = facts[self.fact_index]
-        self.fact_index = (self.fact_index + 1) % len(facts)
-
-        # ---------------------------
-        # Severity-driven commentary
-        # ---------------------------
-        _, _, pm_msg = pm25_severity(self.last_pm25)
-        _, _, co2_msg = co2_severity(self.last_co2)
-
-        if self.last_pm25 > 35:
-            icon = "⚠"
-            comment = pm_msg
-        elif self.last_co2 > 1200:
-            icon = "⚠"
-            comment = co2_msg
-        else:
-            icon = "✓"
-            comment = "Indoor air quality is within healthy ranges."
-
-        self.info_text.setText(
-            f"ⓘ {fact}\n\n{icon} {comment}"
-        )
+        # Left-panel contextual suggestions 
+        self.update_left_panel_context(d, s, state, how_to)
 
 
 
@@ -1711,22 +1747,32 @@ class Dashboard(QtWidgets.QWidget):
             )
 
         elif key == "voc":
-            analysis = analyze_voc(self.last_voc, list(self.history["voc"]))
+            # Handle warmup/None VOC safely
+            voc_current = self.last_voc
+            voc_for_analysis = voc_current if voc_current is not None else 0.0
 
-            if self.last_voc <= 1.0:
-                voc_color = "#4caf50"
-            elif self.last_voc <= 2.0:
-                voc_color = "#ff9800"
+            analysis = analyze_voc(voc_for_analysis, list(self.history["voc"]))
+
+            if voc_current is None:
+                voc_color = "#888888"
+                value_text = "--"
             else:
-                voc_color = "#f44336"
+                if voc_current <= 1.0:
+                    voc_color = "#4caf50"
+                elif voc_current <= 2.0:
+                    voc_color = "#ff9800"
+                else:
+                    voc_color = "#f44336"
+                value_text = str(voc_current)
 
             self.detail.show_detail(
                 key="voc",
                 title="VOC — Volatile Organic Compounds",
-                value_text=str(self.last_voc),
+                value_text=value_text,
                 color=voc_color,
                 description=render_analysis_detail(analysis, accent="#9c27b0")
             )
+
         elif key == "temp":
             analysis = analyze_temp(self.last_temp, list(self.history["temp"]))
             self.detail.show_detail(
