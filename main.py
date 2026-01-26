@@ -34,6 +34,7 @@ try:
     import busio
     import adafruit_scd4x
     import adafruit_bme680
+    import adafruit_pm25
     SENSORS_AVAILABLE = True
 except Exception as e:
     print("Sensor libs not available:", repr(e))
@@ -46,10 +47,13 @@ _i2c = None
 _scd41 = None
 _scd41_last_co2 = None
 _bme688 = None
+_pm25 = None
 
 
 _scd41_miss = 0
 _bme688_miss = 0
+_pm25_miss = 0
+
 MISS_LIMIT = 5
 
 class SensorState(Enum):
@@ -69,6 +73,7 @@ SENSOR_STATUS = {
 SENSOR_SINCE = {
     "scd41":  None,
     "bme688": None,
+    "pm25":   None,
 }
 
 def _i2c_scan(i2c):
@@ -86,15 +91,19 @@ def _i2c_scan(i2c):
 
 
 def init_sensors():
-    global _i2c, _scd41, _bme688, _scd41_miss, _bme688_miss
+    global _i2c, _scd41, _bme688, _pm25, _scd41_miss, _bme688_miss, _pm25_miss
 
     if not SENSORS_AVAILABLE:
         SENSOR_STATUS["scd41"] = SensorState.MISSING
         SENSOR_STATUS["bme688"] = SensorState.MISSING
+        SENSOR_STATUS["pm25"] = SensorState.MISSING
+        SENSOR_STATUS["co"] = SensorState.MISSING
         SENSOR_SINCE["scd41"] = None
         SENSOR_SINCE["bme688"] = None
+        SENSOR_SINCE["pm25"] = None
         _scd41 = None
         _bme688 = None
+        _pm25 = None
         return False
 
     try:
@@ -104,17 +113,18 @@ def init_sensors():
         addrs = _i2c_scan(_i2c)
         print("I2C scan:", [hex(a) for a in sorted(addrs)])
 
-        # Empty scan = transient bus hiccup.
-        # Mark installed sensors as STALE (blinking) instead of MISSING.
         if not addrs:
             if _scd41 is not None and SENSOR_STATUS["scd41"] == SensorState.READY:
                 SENSOR_STATUS["scd41"] = SensorState.STALE
             if _bme688 is not None and SENSOR_STATUS["bme688"] == SensorState.READY:
                 SENSOR_STATUS["bme688"] = SensorState.STALE
+            if _pm25 is not None and SENSOR_STATUS["pm25"] == SensorState.READY:
+                SENSOR_STATUS["pm25"] = SensorState.STALE
             return True
 
         has_scd41 = 0x62 in addrs
-        has_bme = (0x76 in addrs) or (0x77 in addrs)
+        has_bme   = (0x76 in addrs) or (0x77 in addrs)
+        has_pm25  = 0x12 in addrs  # ✅ PMSA003I I2C address is commonly 0x12
 
         # ---- SCD41 ----
         if has_scd41:
@@ -162,8 +172,29 @@ def init_sensors():
                 if _bme688 is not None:
                     SENSOR_STATUS["bme688"] = SensorState.STALE
 
-        # PM2.5 + CO not installed yet
-        SENSOR_STATUS["pm25"] = SensorState.MISSING
+        # ---- PM2.5 (PMSA003I over I2C) ----
+        if has_pm25:
+            _pm25_miss = 0
+            if _pm25 is None:
+                _pm25 = adafruit_pm25.i2c.PM25_I2C(_i2c, reset_pin=None)
+                SENSOR_STATUS["pm25"] = SensorState.WARMUP
+                SENSOR_SINCE["pm25"] = time.time()
+            else:
+                if SENSOR_STATUS["pm25"] in (SensorState.MISSING, SensorState.ERROR, SensorState.STALE):
+                    SENSOR_STATUS["pm25"] = SensorState.WARMUP
+                    if SENSOR_SINCE.get("pm25") is None:
+                        SENSOR_SINCE["pm25"] = time.time()
+        else:
+            _pm25_miss += 1
+            if _pm25_miss >= MISS_LIMIT:
+                _pm25 = None
+                SENSOR_STATUS["pm25"] = SensorState.MISSING
+                SENSOR_SINCE["pm25"] = None
+            else:
+                if _pm25 is not None:
+                    SENSOR_STATUS["pm25"] = SensorState.STALE
+
+        # CO still not installed
         SENSOR_STATUS["co"] = SensorState.MISSING
 
         return True
@@ -172,7 +203,9 @@ def init_sensors():
         print("init_sensors() failed:", repr(e))
         SENSOR_STATUS["scd41"] = SensorState.ERROR
         SENSOR_STATUS["bme688"] = SensorState.ERROR
+        SENSOR_STATUS["pm25"] = SensorState.ERROR
         return False
+
 
 
 
@@ -221,6 +254,19 @@ def read_sensors():
     ok = init_sensors()
     if not ok:
         return mock_readings()
+
+    # --- PM2.5 ---
+    pm25_val = None
+    if _pm25 is not None:
+        try:
+            data = _pm25.read()
+            # Adafruit dict keys typically include: "pm25 standard"
+            pm25_val = float(data["pm25 standard"])
+            SENSOR_STATUS["pm25"] = SensorState.READY
+        except Exception as e:
+            print("PM2.5 read error:", repr(e))
+            SENSOR_STATUS["pm25"] = SensorState.ERROR
+
 
     # --- SCD41 CO2 ---
     co2 = None
@@ -284,9 +330,9 @@ def read_sensors():
         humidity = 45.0
 
     return {
-        "co2": int(co2),
-        "pm25": None,      # not installed yet
-        "voc": voc,        # None until BME688 ready
+        "co2": None if co2 is None else int(co2),
+        "pm25": None if pm25_val is None else round(pm25_val, 1),
+        "voc": voc,
         "temp": round(float(temp_f), 1),
         "humidity": round(float(humidity), 1),
         "co": None,        # not installed yet
