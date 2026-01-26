@@ -17,6 +17,111 @@ from pathlib import Path
 from PyQt5 import QtWidgets, QtGui, QtCore
 
 WIDTH, HEIGHT = 800, 480
+
+# === SENSOR IMPORTS ===
+try:
+    import board
+    import busio
+    import adafruit_scd4x
+    import adafruit_bme680
+    SENSORS_AVAILABLE = True
+except Exception as e:
+    print("Sensor libs not available:", repr(e))
+    SENSORS_AVAILABLE = False
+    
+# === SENSOR INIT ===
+_i2c = None
+_scd41 = None
+_bme688 = None
+from enum import Enum
+
+class SensorState(Enum):
+    MISSING = 0
+    WARMUP = 1
+    READY = 2
+    ERROR = 3
+
+SENSOR_STATUS = {
+    "scd41": SensorState.MISSING,
+    "bme688": SensorState.MISSING,
+    "pm25": SensorState.MISSING,  # not installed yet
+    "co": SensorState.MISSING,    # not installed yet
+}
+
+SENSOR_SINCE = {
+    "scd41": None,
+    "bme688": None,
+}
+
+def _i2c_scan(i2c):
+    addrs = []
+    try:
+        while not i2c.try_lock():
+            pass
+        addrs = i2c.scan()
+    finally:
+        try:
+            i2c.unlock()
+        except Exception:
+            pass
+    return set(addrs)
+
+def init_sensors():
+    global _i2c, _scd41, _bme688
+
+    if not SENSORS_AVAILABLE:
+        SENSOR_STATUS["scd41"] = SensorState.MISSING
+        SENSOR_STATUS["bme688"] = SensorState.MISSING
+        return False
+
+    try:
+        if _i2c is None:
+            _i2c = busio.I2C(board.SCL, board.SDA)
+
+        addrs = _i2c_scan(_i2c)
+
+        # Known I2C addresses
+        has_scd41 = 0x62 in addrs
+        has_bme = (0x76 in addrs) or (0x77 in addrs)
+
+        # ---- SCD41 ----
+        if not has_scd41:
+            _scd41 = None
+            SENSOR_STATUS["scd41"] = SensorState.MISSING
+            SENSOR_SINCE["scd41"] = None
+        else:
+            if _scd41 is None:
+                _scd41 = adafruit_scd4x.SCD4X(_i2c)
+                _scd41.start_periodic_measurement()
+                SENSOR_STATUS["scd41"] = SensorState.WARMUP
+                SENSOR_SINCE["scd41"] = time.time()
+
+        # ---- BME688 ----
+        if not has_bme:
+            _bme688 = None
+            SENSOR_STATUS["bme688"] = SensorState.MISSING
+            SENSOR_SINCE["bme688"] = None
+        else:
+            if _bme688 is None:
+                _bme688 = adafruit_bme680.Adafruit_BME680_I2C(_i2c)
+                _bme688.sea_level_pressure = 1013.25
+                # temp/humidity are usable immediately; gas/VOC proxy needs warmup
+                SENSOR_STATUS["bme688"] = SensorState.WARMUP
+                SENSOR_SINCE["bme688"] = time.time()
+
+        # PM2.5 + CO not installed yet (keep MISSING)
+        SENSOR_STATUS["pm25"] = SensorState.MISSING
+        SENSOR_STATUS["co"] = SensorState.MISSING
+
+        return True
+
+    except Exception as e:
+        print("init_sensors() failed:", repr(e))
+        SENSOR_STATUS["scd41"] = SensorState.ERROR
+        SENSOR_STATUS["bme688"] = SensorState.ERROR
+        return False
+
+
 # ---------------------------
 # CO danger threshold
 # ---------------------------
@@ -53,6 +158,70 @@ def mock_readings():
         "humidity": round(random.uniform(35, 55), 1),
         "co": round(random.uniform(0, 30), 1),
     }
+    
+# === SENSOR BACKEND ===
+def read_sensors():
+    ok = init_sensors()
+    if not ok:
+        return mock_readings()
+
+    # --- SCD41 CO2 ---
+    co2 = None
+    if _scd41 is not None:
+        try:
+            if _scd41.data_ready:
+                co2 = int(_scd41.CO2)  # (if your lib uses CO2, swap)
+                SENSOR_STATUS["scd41"] = SensorState.READY
+            else:
+                # still warming
+                if SENSOR_STATUS["scd41"] != SensorState.MISSING:
+                    SENSOR_STATUS["scd41"] = SensorState.WARMUP
+        except Exception:
+            SENSOR_STATUS["scd41"] = SensorState.ERROR
+
+    # --- BME688 temp/humidity + gas ---
+    temp_f = None
+    humidity = None
+    gas = None
+
+    if _bme688 is not None:
+        try:
+            temp_f = (_bme688.temperature * 9/5) + 32
+            humidity = _bme688.relative_humidity
+            gas = getattr(_bme688, "gas", None)
+
+            # warmup rule for VOC proxy 
+            warmup_s = 60
+            since = SENSOR_SINCE["bme688"] or time.time()
+            if (time.time() - since) < warmup_s:
+                SENSOR_STATUS["bme688"] = SensorState.WARMUP
+            else:
+                SENSOR_STATUS["bme688"] = SensorState.READY
+
+        except Exception:
+            SENSOR_STATUS["bme688"] = SensorState.ERROR
+
+    # VOC proxy only if gas available AND warmup passed
+    voc = None
+    if gas is not None and SENSOR_STATUS["bme688"] == SensorState.READY:
+        voc = voc_proxy_from_gas_ohms(float(gas))
+
+    # Fill safe fallbacks for UI if some values missing
+    if co2 is None:
+        co2 = 450
+    if temp_f is None:
+        temp_f = 72.0
+    if humidity is None:
+        humidity = 45.0
+
+    return {
+        "co2": int(co2),
+        "pm25": None,      # not installed yet
+        "voc": voc,        # proxy (None until BME688 ready)
+        "temp": round(float(temp_f), 1),
+        "humidity": round(float(humidity), 1),
+        "co": None,        # not installed yet
+    }
 
 
 from enum import Enum
@@ -80,113 +249,123 @@ def evaluate_readings(d, history):
       how_to_improve (list of str),
       state (AlertState)
     """
-
     breakdown = []
     how = []
+
+    co  = nval(d.get("co"), 0.0)
+    pm  = nval(d.get("pm25"), 0.0)
+    co2 = nval(d.get("co2"), 450)
+    voc = nval(d.get("voc"), 0.0)
+
+    has_co  = installed_state("co")
+    has_pm  = installed_state("pm25")
+    has_co2 = installed_state("scd41")
+    has_voc = installed_state("bme688")  # proxy from BME688 gas
+
     # -------------------------
     # Alert state (safety first)
     # -------------------------
-    if d["co"] >= CO_DANGER_THRESHOLD:
+    if has_co and co >= CO_DANGER_THRESHOLD:
         state = AlertState.CRITICAL
-    elif d["pm25"] > 35 or d["co2"] > 1200 or ((d.get("voc") or 0.0) > 2.0) or d["co"] >= 9:
+    elif (has_pm and pm > 35) or (has_co2 and co2 > 1200) or (has_voc and voc > 2.0) or (has_co and co >= 9):
         state = AlertState.WARNING
     else:
         state = AlertState.NORMAL
 
     score = 100
 
+
     # -------------------------
     # PM2.5 analysis & penalty
     # -------------------------
-    pm25_analysis = analyze_pm25(
-        d["pm25"],
-        history.get("pm25", [])
-    )
+    if has_pm:
+        pm25_analysis = analyze_pm25(pm, history.get("pm25", []))
 
-    # Penalty logic stays simple
-    pm_pen = 0
-    if d["pm25"] > 35:
-        pm_pen = -25
-    elif d["pm25"] > 12:
-        pm_pen = -10
+        pm_pen = 0
+        if pm > 35:
+            pm_pen = -25
+        elif pm > 12:
+            pm_pen = -10
 
-    if pm_pen:
-        score += pm_pen
-        breakdown.append({
-            "metric": "PM2.5",
-            "points": pm_pen,
-            "label": pm25_severity(d["pm25"])[0],
-            "color": penalty_color(pm_pen),
-            "analysis": pm25_analysis
-        })
+        if pm_pen:
+            score += pm_pen
+            breakdown.append({
+                "metric": "PM2.5",
+                "points": pm_pen,
+                "label": pm25_severity(pm)[0],
+                "color": penalty_color(pm_pen),
+                "analysis": pm25_analysis
+            })
+            how.extend(pm25_analysis["recommendations"])
 
-        # Pull recommendations from analysis
-        how.extend(pm25_analysis["recommendations"])
 
 
     # -------------------------
     # CO2 penalty
     # -------------------------
-    co2_pen = 0
-    if d["co2"] > 1200:
-        co2_pen = -20
-        how.append("Increase fresh air ventilation; consider checking HVAC outside air settings.")
-    elif d["co2"] > 800:
-        co2_pen = -10
-        how.append("Ventilation could be improved (open door/window briefly or increase outside air).")
+    if has_co2:
+        co2_pen = 0
+        if co2 > 1200:
+            co2_pen = -20
+            how.append("Increase fresh air ventilation; consider checking HVAC outside air settings.")
+        elif co2 > 800:
+            co2_pen = -10
+            how.append("Ventilation could be improved (open door/window briefly or increase outside air).")
 
-    if co2_pen:
-        score += co2_pen
-        breakdown.append({
-            "metric": "CO₂",
-            "points": co2_pen,
-            "label": co2_severity(d["co2"])[0],
-            "color": penalty_color(co2_pen),
-        })
+        if co2_pen:
+            score += co2_pen
+            breakdown.append({
+                "metric": "CO₂",
+                "points": co2_pen,
+                "label": co2_severity(co2)[0],
+                "color": penalty_color(co2_pen),
+            })
 
 
     # -------------------------
     # VOC penalty (VOC can be None during warmup)
     # -------------------------
-    voc_val = d.get("voc") or 0.0
+    if has_voc:
+        voc_pen = 0
+        if voc > 2.0:
+            voc_pen = -20
+            how.append("Reduce VOC sources (cleaners/solvents); increase ventilation; consider activated carbon filtration.")
+        elif voc > 1.0:
+            voc_pen = -10
+            how.append("Ventilate and reduce VOC sources (fragrances, sprays, harsh cleaners).")
 
-    voc_pen = 0
-    if voc_val > 2.0:
-        voc_pen = -20
-        how.append("Reduce VOC sources (cleaners/solvents); increase ventilation; consider activated carbon filtration.")
-    elif voc_val > 1.0:
-        voc_pen = -10
-        how.append("Ventilate and reduce VOC sources (fragrances, sprays, harsh cleaners).")
+        if voc_pen:
+            score += voc_pen
+            breakdown.append({
+                "metric": "VOC",
+                "points": voc_pen,
+                "label": "High" if voc > 2.0 else "Elevated",
+                "color": penalty_color(voc_pen),
+            })
 
-    if voc_pen:
-        score += voc_pen
-        breakdown.append({
-            "metric": "VOC",
-            "points": voc_pen,
-            "label": "High" if voc_val > 2.0 else "Elevated",
-            "color": penalty_color(voc_pen),
-        })
         
     # -------------------------
     # CO penalty (dominant safety factor)
     # -------------------------
-    co_pen = 0
-    if d["co"] >= CO_DANGER_THRESHOLD:
-        co_pen = -60  # heavy
-        how.insert(0, "CO is dangerous — ventilate immediately and shut off combustion sources.")
-        how.insert(1, "Evacuate if levels remain high; verify with a calibrated meter.")
-    elif d["co"] >= 9:
-        co_pen = -20
-        how.insert(0, "CO detected — investigate combustion sources and improve ventilation.")
+    if has_co:
+        co_pen = 0
+        if co >= CO_DANGER_THRESHOLD:
+            co_pen = -60
+            how.insert(0, "CO is dangerous — ventilate immediately and shut off combustion sources.")
+            how.insert(1, "Evacuate if levels remain high; verify with a calibrated meter.")
+        elif co >= 9:
+            co_pen = -20
+            how.insert(0, "CO detected — investigate combustion sources and improve ventilation.")
 
-    if co_pen:
-        score += co_pen
-        breakdown.append({
-            "metric": "CO",
-            "points": co_pen,
-            "label": co_severity(d["co"])[0],
-            "color": penalty_color(co_pen),
-        })
+        if co_pen:
+            score += co_pen
+            breakdown.append({
+                "metric": "CO",
+                "points": co_pen,
+                "label": co_severity(co)[0],
+                "color": penalty_color(co_pen),
+            })
+
 
     # Hard safety cap: if CRITICAL, cap the score so it never looks “okay”
     if state == AlertState.CRITICAL:
@@ -204,7 +383,18 @@ def evaluate_readings(d, history):
 
     return score, breakdown, how_unique, state
 
- # ---------------------------
+# ---------------------------
+# Non-Integer Helper
+# ---------------------------
+def nval(x, default=0.0):
+    """Numeric value or default (handles None)."""
+    return default if x is None else x
+
+def installed_state(sensor_key: str) -> bool:
+    return SENSOR_STATUS.get(sensor_key) in (SensorState.WARMUP, SensorState.READY)
+
+
+# ---------------------------
 # Severity helpers
 # ---------------------------
 def pm25_severity(v):
@@ -324,6 +514,24 @@ def analyze_pm25(current, history):
 
     return analysis
 
+# === VOC PROXY ===
+def voc_proxy_from_gas_ohms(gas_ohms: float) -> float:
+    """
+    This is a simple proxy scaled 0.0–3.0 where LOWER gas resistance -> higher 'VOC'.
+    """
+    if not gas_ohms or gas_ohms <= 0:
+        return 0.0
+
+    # Typical indoor gas resistance might be ~5k–500k depending on conditions.
+    # Clamp and map inversely.
+    lo, hi = 5_000.0, 500_000.0
+    g = max(min(gas_ohms, hi), lo)
+
+    # Normalize (hi -> 0, lo -> 1)
+    t = (hi - g) / (hi - lo)
+
+    # Scale to 0–3
+    return round(t * 3.0, 2)
 
 
 def analyze_co2(current, history):
@@ -1169,7 +1377,8 @@ class Dashboard(QtWidgets.QWidget):
         self.last_humidity = 0
         self.last_co = 0
         self.co_test_mode = False
-        self.USE_REAL_SENSORS = False
+        # === ENABLE REAL SENSORS ===
+        self.USE_REAL_SENSORS = True
 
         # ---------------------------
         # Survey mode state
@@ -1315,6 +1524,7 @@ class Dashboard(QtWidgets.QWidget):
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.update_data)
         self.timer.start(1500)
+        self._flash = False
 
         self.idle_active = False
 
@@ -1499,31 +1709,44 @@ class Dashboard(QtWidgets.QWidget):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(6)
 
+        # --- TITLE ROW (label + status dot) ---
+        title_row = QtWidgets.QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+
         title = QtWidgets.QLabel(label)
         title.setStyleSheet("font-size:16px; color:#aaaaaa;")
 
+        status = QtWidgets.QLabel("●")
+        status.setObjectName("status")
+        status.setStyleSheet("font-size:16px; color:#f44336;")  # default red
+
+        title_row.addWidget(title)
+        title_row.addStretch()
+        title_row.addWidget(status)
+
+        layout.addLayout(title_row)
+
+        # --- VALUE ---
         value = QtWidgets.QLabel("--")
         value.setObjectName("value")
         value.setStyleSheet("font-size:38px; font-weight:bold;")
 
+        # --- BADGE ---
         badge = QtWidgets.QLabel("")
         badge.setObjectName("badge")
         badge.setStyleSheet("font-size:14px; color:#888888;")
 
-        layout.addWidget(title)
         layout.addWidget(value)
         layout.addWidget(badge)
         layout.addStretch()
 
         return frame
+
     # ---------------------------
     # Left Panel UI 
     # ---------------------------
 
     def update_left_panel_context(self, d, score, state, how_to):
-        """
-        Contextual suggestions panel under the logo.
-        """
         lines = []
 
         if state == AlertState.CRITICAL:
@@ -1533,15 +1756,20 @@ class Dashboard(QtWidgets.QWidget):
         else:
             lines.append("✓ Air quality looks good.")
 
+        co  = nval(d.get("co"), 0.0)
+        pm  = nval(d.get("pm25"), 0.0)
+        co2 = nval(d.get("co2"), 450)
+        voc = nval(d.get("voc"), 0.0)
+
         drivers = []
-        if d.get("co", 0) >= 9:
-            drivers.append(f"CO {d['co']} ppm")
-        if d.get("pm25", 0) > 12:
-            drivers.append(f"PM2.5 {d['pm25']} µg/m³")
-        if d.get("co2", 0) > 800:
-            drivers.append(f"CO₂ {d['co2']} ppm")
-        if d.get("voc") is not None and (d.get("voc") or 0.0) > 1.0:
-            drivers.append(f"VOC {d['voc']}")
+        if installed_state("co") and co >= 9:
+            drivers.append(f"CO {co} ppm")
+        if installed_state("pm25") and pm > 12:
+            drivers.append(f"PM2.5 {pm} µg/m³")
+        if installed_state("scd41") and co2 > 800:
+            drivers.append(f"CO₂ {co2} ppm")
+        if installed_state("bme688") and d.get("voc") is not None and voc > 1.0:
+            drivers.append(f"VOC {voc}")
 
         if drivers:
             lines.append("Drivers: " + " · ".join(drivers[:2]))
@@ -1564,6 +1792,7 @@ class Dashboard(QtWidgets.QWidget):
             lines.append("• Keep monitoring. No changes recommended right now.")
 
         self.info_text.setText("\n".join(lines))
+
 
 
     # ---------------------------
@@ -1596,14 +1825,17 @@ class Dashboard(QtWidgets.QWidget):
 
     def update_data(self):
         d = self.safe_readings()
+        self._flash = not self._flash  # toggles each tick for warmup flashing
 
 
         # NEW unified evaluation
         s, breakdown, how_to, state = evaluate_readings(d, self.history)
-        self.last_pm25_analysis = analyze_pm25(
-            d["pm25"],
-            list(self.history["pm25"])
-)
+        if installed_state("pm25") and d.get("pm25") is not None:
+            self.last_pm25_analysis = analyze_pm25(d["pm25"], list(self.history["pm25"]))
+        else:
+            self.last_pm25_analysis = None
+
+
         # Pattern-based smart advice
         pattern_advice = smart_advice(self.history)
         for msg in pattern_advice:
@@ -1621,12 +1853,12 @@ class Dashboard(QtWidgets.QWidget):
 
 
         self.tiles["CO₂ (ppm)"].setText(str(d["co2"]))
-        self.tiles["PM2.5 (µg/m³)"].setText(str(d["pm25"]))
+        self.tiles["PM2.5 (µg/m³)"].setText("--" if d.get("pm25") is None else str(d["pm25"]))
         self.tiles["VOC Index"].setText("--" if d.get("voc") is None else str(d["voc"]))
         self.tiles["Temp (°F)"].setText(str(d["temp"]))
         self.tiles["Humidity (%)"].setText(str(d["humidity"]))
         self.tiles["Score"].setText(f"{s}/100")
-        self.tiles["CO (ppm)"].setText(str(d["co"]))
+        self.tiles["CO (ppm)"].setText("--" if d.get("co") is None else str(d["co"]))
 
         
 
@@ -1663,35 +1895,65 @@ class Dashboard(QtWidgets.QWidget):
 
 
 
+
         # ---------------------------
         # Severity-based tile coloring
         # ---------------------------
-        pm_label, pm_color, _ = pm25_severity(self.last_pm25)
+
+        # CO2 + humidity are always present in your current design
         co2_label, co2_color, _ = co2_severity(self.last_co2)
         hum_label, hum_color, _ = humidity_severity(self.last_humidity)
-        co_label, co_color, _ = co_severity(self.last_co)
 
-        self.tiles["PM2.5 (µg/m³)"].setStyleSheet(
-        f"font-size:38px; font-weight:bold; color:{pm_color};"
-        )
-        self.tiles["CO₂ (ppm)"].setStyleSheet(
-            f"font-size:38px; font-weight:bold; color:{co2_color};"
-        )
-        self.tiles["Humidity (%)"].setStyleSheet(
-            f"font-size:38px; font-weight:bold; color:{hum_color};"
-        )
-        self.tiles["CO (ppm)"].setStyleSheet(
-            f"font-size:38px; font-weight:bold; color:{co_color};"
-        )
+        # PM2.5 may be None (not installed yet)
+        if self.last_pm25 is None:
+            pm_label, pm_color = "Not installed", "#888888"
+        else:
+            pm_label, pm_color, _ = pm25_severity(self.last_pm25)
 
-        self.tiles["PM2.5 (µg/m³)"].parent().findChild(QtWidgets.QLabel, "badge").setText(pm_label)
-        self.tiles["CO₂ (ppm)"].parent().findChild(QtWidgets.QLabel, "badge").setText(co2_label)
-        self.tiles["Humidity (%)"].parent().findChild(QtWidgets.QLabel, "badge").setText(hum_label)
-        self.tiles["CO (ppm)"].parent().findChild(QtWidgets.QLabel, "badge").setText(co_label)
+        # CO may be None (not installed yet)
+        if self.last_co is None:
+            co_label, co_color = "Not installed", "#888888"
+        else:
+            co_label, co_color, _ = co_severity(self.last_co)
+
 
         # Left-panel contextual suggestions 
         self.update_left_panel_context(d, s, state, how_to)
+        
+        # Status dots (availability)
+        self.set_tile_status("CO₂ (ppm)", SENSOR_STATUS["scd41"])
+        self.set_tile_status("Temp (°F)", SENSOR_STATUS["bme688"])
+        self.set_tile_status("Humidity (%)", SENSOR_STATUS["bme688"])
 
+        # VOC uses BME688 gas proxy (warmup until ready)
+        self.set_tile_status("VOC Index", SENSOR_STATUS["bme688"])
+
+        # Not installed yet
+        self.set_tile_status("PM2.5 (µg/m³)", SENSOR_STATUS["pm25"])
+        self.set_tile_status("CO (ppm)", SENSOR_STATUS["co"])
+
+        # Score depends on “overall”
+        overall = SensorState.READY if (SENSOR_STATUS["scd41"] == SensorState.READY and SENSOR_STATUS["bme688"] in (SensorState.WARMUP, SensorState.READY)) else SensorState.WARMUP
+        if (SENSOR_STATUS["scd41"] in (SensorState.MISSING, SensorState.ERROR)) and (SENSOR_STATUS["bme688"] in (SensorState.MISSING, SensorState.ERROR)):
+            overall = SensorState.ERROR
+        self.set_tile_status("Score", overall)
+
+    # ---------------------------
+    # Sensor State Helper
+    # ---------------------------
+    def set_tile_status(self, label, state: SensorState):
+        dot = self.tiles[label].parent().findChild(QtWidgets.QLabel, "status")
+        if not dot:
+            return
+
+        if state in (SensorState.MISSING, SensorState.ERROR):
+            dot.setStyleSheet("font-size:16px; color:#f44336;")  # red
+        elif state == SensorState.READY:
+            dot.setStyleSheet("font-size:16px; color:#4caf50;")  # green
+        else:
+            # warmup -> flashing yellow
+            color = "#ffeb3b" if self._flash else "#b59b00"
+            dot.setStyleSheet(f"font-size:16px; color:{color};")
 
 
     # ---------------------------
@@ -1722,7 +1984,29 @@ class Dashboard(QtWidgets.QWidget):
     # ---------------------------
     def open_detail(self, key):
         self.reset_idle_timer()
+
         if key == "pm25":
+            # --- SAFE HANDLING WHEN SENSOR NOT INSTALLED ---
+            if self.last_pm25 is None:
+                self.detail.show_detail(
+                    key="pm25",
+                    title="PM2.5 — Fine Particulate Matter",
+                    value_text="--",
+                    color="#888888",
+                    description=render_analysis_detail(
+                        {
+                            "status": "Not installed",
+                            "confidence": "—",
+                            "summary": "PM2.5 sensor is not installed yet.",
+                            "health": "No PM2.5 measurement available.",
+                            "recommendations": ["Install a PM2.5 sensor to enable particulate monitoring."],
+                            "window": "—",
+                        },
+                        accent="#ff9800",
+                    ),
+                )
+                return
+
             analysis = analyze_pm25(self.last_pm25, list(self.history["pm25"]))
             _, pm_color, _ = pm25_severity(self.last_pm25)
 
@@ -1731,7 +2015,7 @@ class Dashboard(QtWidgets.QWidget):
                 title="PM2.5 — Fine Particulate Matter",
                 value_text=f"{self.last_pm25} µg/m³",
                 color=pm_color,
-                description=render_analysis_detail(analysis, accent="#ff9800")
+                description=render_analysis_detail(analysis, accent="#ff9800"),
             )
 
         elif key == "co2":
@@ -1743,7 +2027,7 @@ class Dashboard(QtWidgets.QWidget):
                 title="CO₂ — Carbon Dioxide",
                 value_text=f"{self.last_co2} ppm",
                 color=co2_color,
-                description=render_analysis_detail(analysis, accent="#03a9f4")
+                description=render_analysis_detail(analysis, accent="#03a9f4"),
             )
 
         elif key == "voc":
@@ -1770,7 +2054,7 @@ class Dashboard(QtWidgets.QWidget):
                 title="VOC — Volatile Organic Compounds",
                 value_text=value_text,
                 color=voc_color,
-                description=render_analysis_detail(analysis, accent="#9c27b0")
+                description=render_analysis_detail(analysis, accent="#9c27b0"),
             )
 
         elif key == "temp":
@@ -1780,7 +2064,7 @@ class Dashboard(QtWidgets.QWidget):
                 title="Temperature",
                 value_text=f"{self.last_temp} °F",
                 color="#03a9f4",
-                description=render_analysis_detail(analysis, accent="#03a9f4")
+                description=render_analysis_detail(analysis, accent="#03a9f4"),
             )
 
         elif key == "humidity":
@@ -1791,11 +2075,31 @@ class Dashboard(QtWidgets.QWidget):
                 title="Relative Humidity",
                 value_text=f"{self.last_humidity} %",
                 color=color,
-                description=render_analysis_detail(analysis, accent="#00bcd4")
+                description=render_analysis_detail(analysis, accent="#00bcd4"),
             )
 
-
         elif key == "co":
+            # --- SAFE HANDLING WHEN SENSOR NOT INSTALLED ---
+            if self.last_co is None:
+                self.detail.show_detail(
+                    key="co",
+                    title="Carbon Monoxide",
+                    value_text="--",
+                    color="#888888",
+                    description=render_analysis_detail(
+                        {
+                            "status": "Not installed",
+                            "confidence": "—",
+                            "summary": "CO sensor is not installed yet.",
+                            "health": "No carbon monoxide measurement available.",
+                            "recommendations": ["Install a CO sensor to enable safety monitoring."],
+                            "window": "—",
+                        },
+                        accent="#f44336",
+                    ),
+                )
+                return
+
             analysis = analyze_co(self.last_co, list(self.history["co"]))
             _, color, _ = co_severity(self.last_co)
 
@@ -1804,15 +2108,16 @@ class Dashboard(QtWidgets.QWidget):
                 title="Carbon Monoxide",
                 value_text=f"{self.last_co} ppm",
                 color=color,
-                description=render_analysis_detail(analysis, accent="#f44336")
+                description=render_analysis_detail(analysis, accent="#f44336"),
             )
 
         elif key == "score":
             self.detail.show_score_detail(
                 score=self.last_score,
                 breakdown=self.last_breakdown,
-                how_to=self.last_how_to
+                how_to=self.last_how_to,
             )
+
 
 # ---------------------------
 # App start
