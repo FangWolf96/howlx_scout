@@ -102,6 +102,7 @@ def init_sensors():
             _i2c = busio.I2C(board.SCL, board.SDA)
 
         addrs = _i2c_scan(_i2c)
+        print("I2C scan:", [hex(a) for a in sorted(addrs)])
 
         # Empty scan = transient bus hiccup.
         # Mark installed sensors as STALE (blinking) instead of MISSING.
@@ -228,18 +229,24 @@ def read_sensors():
             warmup_s = 10
             since = SENSOR_SINCE.get("scd41") or time.time()
             warmed = (time.time() - since) >= warmup_s
+            print("SCD41 data_ready:", _scd41.data_ready, "last_co2:", _scd41_last_co2)
 
             if _scd41.data_ready:
-                co2 = int(_scd41.co2)
+                co2 = int(_scd41.CO2)  # NOTE: Adafruit uses .CO2 (caps) on SCD4x
                 _scd41_last_co2 = co2
                 SENSOR_STATUS["scd41"] = SensorState.READY
             else:
-                # No new sample: keep last known
-                co2 = _scd41_last_co2
-                SENSOR_STATUS["scd41"] = SensorState.READY if warmed else SensorState.WARMUP
+                # No new sample yet
+                if _scd41_last_co2 is None:
+                    SENSOR_STATUS["scd41"] = SensorState.WARMUP
+                else:
+                    co2 = _scd41_last_co2
+                    SENSOR_STATUS["scd41"] = SensorState.STALE if warmed else SensorState.WARMUP
 
-        except Exception:
+        except Exception as e:
+            print("SCD41 read error:", repr(e))
             SENSOR_STATUS["scd41"] = SensorState.ERROR
+
 
     # --- BME688 temp/humidity + gas ---
     temp_f = None
@@ -268,8 +275,8 @@ def read_sensors():
 
     ## Only fallback to a number if the sensor exists but no sample yet.
     # If sensor is missing, keep None so UI shows "--".
-    if co2 is None and _scd41 is not None:
-        co2 = 450
+    #if co2 is None and _scd41 is not None:
+    #    co2 = 450
 
     if temp_f is None:
         temp_f = 72.0
@@ -1526,16 +1533,31 @@ class Dashboard(QtWidgets.QWidget):
         left_layout.addWidget(self.state_icon)
 
 
-        # Dynamic info text
+        
+        # Dynamic info text (scrollable)
         self.info_text = QtWidgets.QLabel("")
         self.info_text.setWordWrap(True)
-        self.info_text.setStyleSheet(
-            "font-size:14px; color:#cccccc;"
-        )
-        left_layout.addWidget(self.info_text)
-        left_layout.addStretch()
+        self.info_text.setAlignment(QtCore.Qt.AlignTop)
+        self.info_text.setStyleSheet("font-size:14px; color:#cccccc;")
 
-        self.root.addWidget(self.left_panel)
+        info_container = QtWidgets.QWidget()
+        info_layout = QtWidgets.QVBoxLayout(info_container)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.addWidget(self.info_text)
+        info_layout.addStretch()
+
+        self.info_scroll = QtWidgets.QScrollArea()
+        self.info_scroll.setWidgetResizable(True)
+        self.info_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.info_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.info_scroll.setWidget(info_container)
+
+        QtWidgets.QScroller.grabGesture(
+            self.info_scroll.viewport(),
+            QtWidgets.QScroller.LeftMouseButtonGesture
+        )
+
+        left_layout.addWidget(self.info_scroll, stretch=1)
 
         # ===========================
         # RIGHT GRID PANEL
@@ -1926,7 +1948,9 @@ class Dashboard(QtWidgets.QWidget):
 
         
 
-        self.last_co2 = d["co2"]
+        self.last_co2 = d.get("co2")
+        if self.last_co2 is None:
+            self.last_co2 = 450  # only for analysis funcs, not UI display
         self.last_pm25 = d["pm25"]
         self.last_voc = d.get("voc")
         self.last_temp = d["temp"]
