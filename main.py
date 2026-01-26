@@ -223,33 +223,31 @@ def init_sensors():
             if _bme688 is not None:
                 SENSOR_STATUS["bme688"] = SensorState.STALE
 
-    # ---- PM2.5 (PMSA003I over I2C) ----
-    if has_pm25:
-        _pm25_miss = 0
-        if _pm25 is None:
-            try:
-                _pm25 = adafruit_pm25.i2c.PM25_I2C(_i2c, reset_pin=None)
-                SENSOR_STATUS["pm25"] = SensorState.WARMUP
-                SENSOR_SINCE["pm25"] = time.time()
-            except Exception as e:
-                print("PM2.5 init error:", repr(e))
-                _pm25 = None
-                SENSOR_STATUS["pm25"] = SensorState.ERROR
-                SENSOR_SINCE["pm25"] = None
-        else:
-            if SENSOR_STATUS["pm25"] in (SensorState.MISSING, SensorState.ERROR, SensorState.STALE):
-                SENSOR_STATUS["pm25"] = SensorState.WARMUP
-                if SENSOR_SINCE.get("pm25") is None:
-                    SENSOR_SINCE["pm25"] = time.time()
-    else:
-        _pm25_miss += 1
-        if _pm25_miss >= MISS_LIMIT:
+# ---- PM2.5 (Plantower over UART) ----
+if has_pm25:
+    _pm25_miss = 0
+    if _pm25 is None:
+        try:
+            uart = busio.UART(board.TX, board.RX, baudrate=9600, timeout=0.25)
+            _pm25 = adafruit_pm25.uart.PM25_UART(uart, reset_pin=None)
+
+            SENSOR_STATUS["pm25"] = SensorState.WARMUP
+            SENSOR_SINCE["pm25"] = time.time()
+        except Exception as e:
+            print("PM2.5 UART init error:", repr(e))
             _pm25 = None
-            SENSOR_STATUS["pm25"] = SensorState.MISSING
+            SENSOR_STATUS["pm25"] = SensorState.ERROR
             SENSOR_SINCE["pm25"] = None
-        else:
-            if _pm25 is not None:
-                SENSOR_STATUS["pm25"] = SensorState.STALE
+else:
+    _pm25_miss += 1
+    if _pm25_miss >= MISS_LIMIT:
+        _pm25 = None
+        SENSOR_STATUS["pm25"] = SensorState.MISSING
+        SENSOR_SINCE["pm25"] = None
+    else:
+        if _pm25 is not None:
+            SENSOR_STATUS["pm25"] = SensorState.STALE
+
 
     # CO still not installed
     SENSOR_STATUS["co"] = SensorState.MISSING
