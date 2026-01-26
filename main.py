@@ -1,189 +1,20 @@
-#!/usr/bin/env python3
-from pathlib import Path
 import os
+
+# ---------------------------
+# FORCE CORRECT 800x480 SCALING ON PI TOUCH
+# ---------------------------
+os.environ["QT_QPA_PLATFORM"] = "eglfs"
+os.environ["QT_QPA_EGLFS_HIDECURSOR"] = "1"
+os.environ["QT_QPA_EGLFS_PHYSICAL_WIDTH"] = "154"
+os.environ["QT_QPA_EGLFS_PHYSICAL_HEIGHT"] = "86"
+os.environ["QT_FONT_DPI"] = "96"
+
 import sys
-import time
-TEMP_F_OFFSET = -8.0
-
-# ---------------------------
-# App paths (do NOT chdir yet)
-# ---------------------------
-BASE_DIR = Path(__file__).resolve().parent
-ASSETS_DIR = BASE_DIR / "assets"
-
-# ===========================
-# LGPIO RUNTIME FIX (Pi 5)
-# ===========================
-def _setup_lgpio_runtime():
-    runtime = "/var/run/lgpio"
-    try:
-        os.makedirs(runtime, exist_ok=True)
-        os.environ["LGPIO_FILEDIR"] = runtime
-        os.chdir(runtime)  # IMPORTANT: stay here for `import board`
-        return runtime
-    except PermissionError:
-        fallback = os.path.expanduser("~/.lgpio")
-        os.makedirs(fallback, exist_ok=True)
-        os.environ["LGPIO_FILEDIR"] = fallback
-        os.chdir(fallback)  # IMPORTANT: stay here for `import board`
-        return fallback
-
-LGPIO_DIR = _setup_lgpio_runtime()
-
-# ---------------------------
-# Normal imports
-# ---------------------------
 import random
 import json
+import time
+from pathlib import Path
 from PyQt5 import QtWidgets, QtGui, QtCore
-
-# ===========================
-# SENSOR BACKEND (REAL DATA)
-# ===========================
-import board
-import busio
-import adafruit_scd4x
-import adafruit_bme680
-
-# ---------------------------
-# Return to repo dir
-# ---------------------------
-os.chdir(str(BASE_DIR))
-
-_i2c = None
-_scd41 = None
-_bme688 = None
-_last_co2 = 400
-_last_scd_temp_c = None
-_last_scd_rh = None
-
-def init_sensors():
-    global _i2c, _scd41, _bme688
-
-    _i2c = busio.I2C(board.SCL, board.SDA)
-
-    _scd41 = adafruit_scd4x.SCD4X(_i2c)
-    _scd41.start_periodic_measurement()
-
-    _bme688 = adafruit_bme680.Adafruit_BME680_I2C(_i2c)
-
-    #Gas / VOC Burn In
-    _bme688.sea_level_pressure = 1013.25
-    _bme688.set_gas_heater(320, 150)  # 320°C for 150ms
-
-
-def read_sensors():
-    global _i2c, _scd41, _bme688
-    global _last_co2, _last_scd_temp_c, _last_scd_rh
-
-    # ---------------------------
-    # Self-heal sensor init
-    # ---------------------------
-    if _i2c is None or _scd41 is None or _bme688 is None:
-        try:
-            init_sensors()
-        except Exception:
-            return {
-                "co2": 400,
-                "pm25": 0.0,
-                "voc": None,
-                "temp": 72.0,
-                "humidity": 40.0,
-                "co": 0.0,
-                "_present": {"co2": False, "bme": False, "voc": False},
-                "_voc_state": "missing",
-            }
-
-    sensors_present = {"co2": False, "bme": False, "voc": False}
-
-    try:
-        # ---------- CO₂ + SCD41 temp/RH ----------
-        co2 = _last_co2
-        if _scd41:
-            if _scd41.data_ready:
-                try:
-                    co2 = int(_scd41.CO2)
-                    _last_co2 = co2
-                    sensors_present["co2"] = True
-                except Exception:
-                    pass
-
-                # Capture SCD41 temp/RH (only valid when data_ready)
-                try:
-                    _last_scd_temp_c = float(_scd41.temperature)
-                    _last_scd_rh = float(_scd41.relative_humidity)
-                except Exception:
-                    pass
-            else:
-                # not ready yet — keep last good value (prevents flicker)
-                sensors_present["co2"] = True  # device present even if not ready
-
-        # ---------- BME688 ----------
-        voc_state = "missing"
-        voc = None
-
-        temp_f = None
-        humidity = None
-
-        if _bme688:
-            sensors_present["bme"] = True
-
-            temp_c = _bme688.temperature
-            humidity_raw = _bme688.relative_humidity
-            gas = _bme688.gas
-
-            temp_f = round((temp_c * 9 / 5) + 32, 1)
-            temp_f = round(temp_f + TEMP_F_OFFSET, 1)
-            humidity = round(humidity_raw, 1)
-
-            # VOC handling (still "index" style)
-            if gas and gas > 1000:
-                sensors_present["voc"] = True
-                voc = round(max(0.1, min(3.0, 3.0 - (gas / 300000))), 2)
-                voc_state = "ready"
-            else:
-                voc = None
-                voc_state = "warming"
-
-        # ---------- Fallback temp/RH from SCD41 if BME is missing or clearly heat-soaked ----------
-        # You can tighten/loosen these heuristics.
-        if (temp_f is None or temp_f > 95) and _last_scd_temp_c is not None:
-            temp_f = round((_last_scd_temp_c * 9 / 5) + 32, 1)
-
-        if (humidity is None or humidity > 100 or humidity < 0) and _last_scd_rh is not None:
-            humidity = round(_last_scd_rh, 1)
-
-        # Final safety defaults + clamp
-        if temp_f is None:
-            temp_f = 72.0
-        if humidity is None:
-            humidity = 40.0
-        humidity = max(0.0, min(100.0, humidity))
-
-        return {
-            "co2": co2,
-            "pm25": 0.0,
-            "voc": voc,
-            "temp": temp_f,
-            "humidity": humidity,
-            "co": 0.0,
-            "_present": sensors_present,
-            "_voc_state": voc_state,
-        }
-
-    except Exception:
-        return {
-            "co2": 400,
-            "pm25": 0.0,
-            "voc": None,
-            "temp": 72.0,
-            "humidity": 40.0,
-            "co": 0.0,
-            "_present": {"co2": False, "bme": False, "voc": False},
-            "_voc_state": "missing",
-        }
-
-
 
 WIDTH, HEIGHT = 800, 480
 # ---------------------------
@@ -194,7 +25,7 @@ CO_DANGER_THRESHOLD = 35  # ppm
 
 def add_watermark(parent, x, y, w=350, opacity=0.06):
     label = QtWidgets.QLabel(parent)
-    pix = QtGui.QPixmap(str(ASSETS_DIR / "logo.png")).scaled(
+    pix = QtGui.QPixmap("assets/logo.png").scaled(
         w, w,
         QtCore.Qt.KeepAspectRatio,
         QtCore.Qt.SmoothTransformation
@@ -257,12 +88,7 @@ def evaluate_readings(d, history):
     # -------------------------
     if d["co"] >= CO_DANGER_THRESHOLD:
         state = AlertState.CRITICAL
-    elif (
-        d["pm25"] > 35
-        or d["co2"] > 1200
-        or (d["voc"] is not None and d["voc"] > 2.0)
-        or d["co"] >= 9
-    ):
+    elif d["pm25"] > 35 or d["co2"] > 1200 or d["voc"] > 2.0 or d["co"] >= 9:
         state = AlertState.WARNING
     else:
         state = AlertState.NORMAL
@@ -411,18 +237,6 @@ def co_severity(v):
         return ("Elevated", "#ff9800", "CO detected — investigate sources.")
     else:
         return ("Danger", "#f44336", "Dangerous CO levels — ventilate immediately.")
-
-# ---------------------------        
-#Animation Helpers
-# ---------------------------
-def _pulse_dot(self, dot: QtWidgets.QLabel):
-    anim = QtCore.QPropertyAnimation(dot, b"opacity")
-    anim.setDuration(900)
-    anim.setStartValue(0.3)
-    anim.setEndValue(1.0)
-    anim.setLoopCount(-1)
-    anim.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
-    dot._pulse_anim = anim  # prevent GC
 # ---------------------------
 # Rolling analysis helpers
 # ---------------------------
@@ -947,7 +761,7 @@ class IdleOverlay(QtWidgets.QWidget):
         layout.setAlignment(QtCore.Qt.AlignCenter)
 
         self.logo = QtWidgets.QLabel()
-        pix = QtGui.QPixmap(str(ASSETS_DIR / "logo.png")).scaled(
+        pix = QtGui.QPixmap("assets/logo.png").scaled(
             220, 220,
             QtCore.Qt.KeepAspectRatio,
             QtCore.Qt.SmoothTransformation
@@ -1015,32 +829,6 @@ class IdleOverlay(QtWidgets.QWidget):
     def mousePressEvent(self, event):
         self.parent().exit_idle_mode()
 
-class StartupCheck(QtWidgets.QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setFixedSize(WIDTH, HEIGHT)
-        self.setStyleSheet("background:#0b0b0b; color:white;")
-
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setAlignment(QtCore.Qt.AlignCenter)
-
-        self.title = QtWidgets.QLabel("HowlX IAQ Scout")
-        self.title.setStyleSheet("font-size:34px; font-weight:700;")
-        layout.addWidget(self.title)
-
-        self.status = QtWidgets.QLabel("Initializing sensors…")
-        self.status.setStyleSheet("font-size:18px; color:#cccccc;")
-        layout.addWidget(self.status)
-
-        self.details = QtWidgets.QLabel("")
-        self.details.setStyleSheet("font-size:14px; color:#aaaaaa;")
-        layout.addWidget(self.details)
-
-    def update(self, text):
-        self.details.setText(text)
-        QtWidgets.QApplication.processEvents()
-
-
 class TrendGraph(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1093,7 +881,7 @@ class DetailOverlay(QtWidgets.QWidget):
         top = QtWidgets.QHBoxLayout()
 
         logo = QtWidgets.QLabel()
-        logo_pix = QtGui.QPixmap(str(ASSETS_DIR / "logo.png")).scaled(
+        logo_pix = QtGui.QPixmap("assets/logo.png").scaled(
             80, 80,
             QtCore.Qt.KeepAspectRatio,
             QtCore.Qt.SmoothTransformation
@@ -1378,7 +1166,6 @@ class Dashboard(QtWidgets.QWidget):
         self.last_humidity = 0
         self.last_co = 0
         self.co_test_mode = False
-
         # ---------------------------
         # Survey mode state
         # ---------------------------
@@ -1412,64 +1199,6 @@ class Dashboard(QtWidgets.QWidget):
             "temp": deque(maxlen=40),
 }
    
-    def update_left_panel_context(self, d, score, state, how_to):
-        """
-        contextual suggestions panel under the logo:
-        - One short context summary
-        - 1–3 prioritized suggestions
-        - No duplicates / no empty block
-        """
-
-        lines = []
-
-        # --- Context headline (what's happening) ---
-        if state == AlertState.CRITICAL:
-            lines.append("⛔ Immediate action recommended.")
-        elif state == AlertState.WARNING:
-            lines.append("⚠ Air quality needs attention.")
-        else:
-            lines.append("✓ Air quality looks good.")
-
-        # --- Context details (short + readable) ---
-        # Pick 1–2 most relevant drivers
-        drivers = []
-        if d.get("co", 0) >= 9:
-            drivers.append(f"CO {d['co']} ppm")
-        if d.get("pm25", 0) > 12:
-            drivers.append(f"PM2.5 {d['pm25']} µg/m³")
-        if d.get("co2", 0) > 800:
-            drivers.append(f"CO₂ {d['co2']} ppm")
-        if d.get("voc") is not None and d.get("voc", 0) > 1.0:
-            drivers.append(f"VOC {d['voc']}")
-
-        if drivers:
-            lines.append("Drivers: " + " · ".join(drivers[:2]))
-
-        lines.append(f"IAQ Score: {score}/100")
-
-        # --- Suggestions (prioritized, deduped) ---
-        suggestions = []
-        for s in (how_to or []):
-            s = (s or "").strip()
-            if not s:
-                continue
-            if s not in suggestions:
-                suggestions.append(s)
-
-        # Keep it tight like before
-        suggestions = suggestions[:3]
-
-        if suggestions:
-            lines.append("")
-            lines.append("Suggestions:")
-            for s in suggestions:
-                lines.append(f"• {s}")
-        else:
-            lines.append("")
-            lines.append("Suggestions:")
-            lines.append("• Keep monitoring. No changes recommended right now.")
-
-        self.info_text.setText("\n".join(lines))
 
 
         # --------------------------------
@@ -1504,7 +1233,7 @@ class Dashboard(QtWidgets.QWidget):
 
         # Logo (solid, visible)
         logo = QtWidgets.QLabel()
-        logo_pix = QtGui.QPixmap(str(ASSETS_DIR / "logo.png")).scaled(
+        logo_pix = QtGui.QPixmap("assets/logo.png").scaled(
             200, 200,
             QtCore.Qt.KeepAspectRatio,
             QtCore.Qt.SmoothTransformation
@@ -1697,131 +1426,6 @@ class Dashboard(QtWidgets.QWidget):
 
         with data_file.open("a") as f:
             f.write(row)
-    # ---------------------------
-    # Sensor Presence Helpers
-    # ---------------------------
-    def set_sensor_status(self, tile_label, state: str):
-        tile = self.tiles.get(tile_label)
-        if not tile:
-            return
-
-        dot = tile.parent().findChild(QtWidgets.QLabel, "status")
-        if not dot:
-            return
-
-        # Stop any previous animation
-        if hasattr(dot, "_pulse_anim"):
-            dot._pulse_anim.stop()
-            del dot._pulse_anim
-
-        if state == "ready":
-            dot.setStyleSheet("font-size:14px; color:#4caf50;")
-            dot.setGraphicsEffect(None)
-
-        elif state == "warming":
-            dot.setStyleSheet("font-size:14px; color:#ffeb3b;")
-            self._pulse_dot(dot)
-
-        else:  # "missing"
-            dot.setStyleSheet("font-size:14px; color:#f44336;")
-            dot.setGraphicsEffect(None)
-    # ---------------------------
-    # Data Update
-    # ---------------------------
-    def update_data(self):
-        d = read_sensors()
-        present = d.get("_present", {})
-
-        # ---------------------------
-        # Sensor presence indicators
-        # ---------------------------
-        self.set_sensor_status("CO₂ (ppm)", "ready" if present.get("co2") else "missing")
-
-        voc_state = d.get("_voc_state", "missing")
-        self.set_sensor_status("VOC Index", voc_state)
-
-        bme_state = "ready" if present.get("bme") else "missing"
-        self.set_sensor_status("Temp (°F)", bme_state)
-        self.set_sensor_status("Humidity (%)", bme_state)
-
-        self.set_sensor_status("PM2.5 (µg/m³)", "missing")
-        self.set_sensor_status("CO (ppm)", "missing")
-
-        # ---------------------------
-        # Normalize values (never None)
-        # ---------------------------
-        voc_value = d["voc"] if d["voc"] is not None else 0.0
-
-        # ---------------------------
-        # Unified evaluation
-        # ---------------------------
-        s, breakdown, how_to, state = evaluate_readings(
-            {**d, "voc": voc_value},
-            self.history
-        )
-
-        # Pattern-based advice
-        for msg in smart_advice(self.history):
-            if msg not in how_to:
-                how_to.append(msg)
-
-        self.last_score = s
-        self.score_history.append(s)
-        self.last_breakdown = breakdown
-        self.last_how_to = how_to
-        self.last_state = state
-        self.update_alert_state_ui()
-        self.update_left_panel_context(d, s, state, how_to)
-
-        # ---------------------------
-        # Tile values
-        # ---------------------------
-        self.tiles["CO₂ (ppm)"].setText(str(d["co2"]))
-        self.tiles["PM2.5 (µg/m³)"].setText(str(d["pm25"]))
-        self.tiles["VOC Index"].setText("--" if d["voc"] is None else str(d["voc"]))
-        self.tiles["Temp (°F)"].setText(str(d["temp"]))
-        self.tiles["Humidity (%)"].setText(str(d["humidity"]))
-        self.tiles["CO (ppm)"].setText(str(d["co"]))
-        self.tiles["Score"].setText(f"{s}/100")
-
-        # ---------------------------
-        # Cache last values
-        # ---------------------------
-        self.last_co2 = d["co2"]
-        self.last_pm25 = d["pm25"]
-        self.last_voc = voc_value
-        self.last_temp = d["temp"]
-        self.last_humidity = d["humidity"]
-        self.last_co = d["co"]
-
-        # ---------------------------
-        # Survey capture
-        # ---------------------------
-        if self.survey_mode:
-            self._record_survey_sample(d, s, state)
-
-        # ---------------------------
-        # Rolling history
-        # ---------------------------
-        for k in self.history:
-            if d[k] is None:
-                continue  # do NOT pollute history during warm-up
-            self.history[k].append(d[k])
-
-        # ---------------------------
-        # CO danger overlay
-        # ---------------------------
-        if not self.co_test_mode:
-            if self.last_co >= CO_DANGER_THRESHOLD:
-                self.co_danger.show_level(self.last_co)
-            elif self.co_danger.isVisible():
-                self.co_danger.hide()
-
-        # ---------------------------
-        # Live detail refresh
-        # ---------------------------
-        if self.detail.isVisible() and self.detail.current_key:
-            self.open_detail(self.detail.current_key)
 
     # ---------------------------
     # Exit confirmation
@@ -1882,26 +1486,16 @@ class Dashboard(QtWidgets.QWidget):
     # ---------------------------
     def _build_tile(self, label):
         frame = QtWidgets.QFrame()
-        frame.setStyleSheet("background:#1a1a1a; border-radius:14px;")
+        frame.setStyleSheet(
+            "background:#1a1a1a; border-radius:14px;"
+        )
 
         layout = QtWidgets.QVBoxLayout(frame)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(6)
 
-        # --- Title row with status dot ---
-        title_row = QtWidgets.QHBoxLayout()
-
-        status = QtWidgets.QLabel("●")
-        status.setObjectName("status")
-        status.setStyleSheet("font-size:14px; color:#f44336;")  # default red
-        status.setFixedWidth(14)
-
         title = QtWidgets.QLabel(label)
         title.setStyleSheet("font-size:16px; color:#aaaaaa;")
-
-        title_row.addWidget(status)
-        title_row.addWidget(title)
-        title_row.addStretch()
 
         value = QtWidgets.QLabel("--")
         value.setObjectName("value")
@@ -1911,14 +1505,12 @@ class Dashboard(QtWidgets.QWidget):
         badge.setObjectName("badge")
         badge.setStyleSheet("font-size:14px; color:#888888;")
 
-        layout.addLayout(title_row)
+        layout.addWidget(title)
         layout.addWidget(value)
         layout.addWidget(badge)
         layout.addStretch()
 
         return frame
-
-
 
 
 
@@ -1937,6 +1529,132 @@ class Dashboard(QtWidgets.QWidget):
         else:
             self.state_icon.setText("✓")
             self.state_icon.setStyleSheet("font-size:32px; color:#4caf50;")
+
+    # ---------------------------
+    # Data update
+    # ---------------------------
+    def update_data(self):
+        d = mock_readings()
+
+        # NEW unified evaluation
+        s, breakdown, how_to, state = evaluate_readings(d, self.history)
+        self.last_pm25_analysis = analyze_pm25(
+            d["pm25"],
+            list(self.history["pm25"])
+)
+        # Pattern-based smart advice
+        pattern_advice = smart_advice(self.history)
+        for msg in pattern_advice:
+            if msg not in how_to:
+                how_to.append(msg)
+
+
+        # Store for later use (score detail, advice engine, alerts)
+        self.last_score = s
+        self.score_history.append(s)
+        self.last_breakdown = breakdown
+        self.last_how_to = how_to
+        self.last_state = state
+        self.update_alert_state_ui()
+
+
+        self.tiles["CO₂ (ppm)"].setText(str(d["co2"]))
+        self.tiles["PM2.5 (µg/m³)"].setText(str(d["pm25"]))
+        self.tiles["VOC Index"].setText(str(d["voc"]))
+        self.tiles["Temp (°F)"].setText(str(d["temp"]))
+        self.tiles["Humidity (%)"].setText(str(d["humidity"]))
+        self.tiles["Score"].setText(f"{s}/100")
+        self.tiles["CO (ppm)"].setText(str(d["co"]))
+
+        
+
+        self.last_co2 = d["co2"]
+        self.last_pm25 = d["pm25"]
+        self.last_voc = d["voc"]
+        self.last_temp = d["temp"]
+        self.last_humidity = d["humidity"]
+        self.last_co = d["co"]
+        # ---------------------------
+        # Survey mode data capture
+        # ---------------------------
+        if self.survey_mode:
+            self._record_survey_sample(d, s, state)
+
+        # Update rolling history
+        for k in self.history:
+            self.history[k].append(d[k])
+
+
+        # Auto-trigger CO danger overlay (skip if test mode)
+        if not self.co_test_mode:
+            if self.last_co >= CO_DANGER_THRESHOLD:
+                self.co_danger.show_level(self.last_co)
+            elif self.co_danger.isVisible():
+                self.co_danger.hide()
+
+        # --- Live detail refresh (single source of truth) ---
+        if self.detail.isVisible() and self.detail.current_key:
+            self.open_detail(self.detail.current_key)
+
+
+
+        # ---------------------------
+        # Severity-based tile coloring
+        # ---------------------------
+        pm_label, pm_color, _ = pm25_severity(self.last_pm25)
+        co2_label, co2_color, _ = co2_severity(self.last_co2)
+        hum_label, hum_color, _ = humidity_severity(self.last_humidity)
+        co_label, co_color, _ = co_severity(self.last_co)
+
+        self.tiles["PM2.5 (µg/m³)"].setStyleSheet(
+        f"font-size:38px; font-weight:bold; color:{pm_color};"
+        )
+        self.tiles["CO₂ (ppm)"].setStyleSheet(
+            f"font-size:38px; font-weight:bold; color:{co2_color};"
+        )
+        self.tiles["Humidity (%)"].setStyleSheet(
+            f"font-size:38px; font-weight:bold; color:{hum_color};"
+        )
+        self.tiles["CO (ppm)"].setStyleSheet(
+            f"font-size:38px; font-weight:bold; color:{co_color};"
+        )
+
+        self.tiles["PM2.5 (µg/m³)"].parent().findChild(QtWidgets.QLabel, "badge").setText(pm_label)
+        self.tiles["CO₂ (ppm)"].parent().findChild(QtWidgets.QLabel, "badge").setText(co2_label)
+        self.tiles["Humidity (%)"].parent().findChild(QtWidgets.QLabel, "badge").setText(hum_label)
+        self.tiles["CO (ppm)"].parent().findChild(QtWidgets.QLabel, "badge").setText(co_label)
+
+
+        # Left-panel dynamic text
+        facts = [
+            "Good indoor air quality improves focus and sleep.",
+            "PM2.5 particles are smaller than a human hair.",
+            "High CO₂ can cause drowsiness and headaches.",
+            "Ventilation is the fastest IAQ improvement."
+        ]
+
+        fact = facts[self.fact_index]
+        self.fact_index = (self.fact_index + 1) % len(facts)
+
+        # ---------------------------
+        # Severity-driven commentary
+        # ---------------------------
+        _, _, pm_msg = pm25_severity(self.last_pm25)
+        _, _, co2_msg = co2_severity(self.last_co2)
+
+        if self.last_pm25 > 35:
+            icon = "⚠"
+            comment = pm_msg
+        elif self.last_co2 > 1200:
+            icon = "⚠"
+            comment = co2_msg
+        else:
+            icon = "✓"
+            comment = "Indoor air quality is within healthy ranges."
+
+        self.info_text.setText(
+            f"ⓘ {fact}\n\n{icon} {comment}"
+        )
 
 
 
@@ -2005,7 +1723,7 @@ class Dashboard(QtWidgets.QWidget):
             self.detail.show_detail(
                 key="voc",
                 title="VOC — Volatile Organic Compounds",
-                value_text="Warming…" if self.last_voc == 0.0 else str(self.last_voc),
+                value_text=str(self.last_voc),
                 color=voc_color,
                 description=render_analysis_detail(analysis, accent="#9c27b0")
             )
@@ -2056,23 +1774,7 @@ class Dashboard(QtWidgets.QWidget):
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
 
-    splash = StartupCheck()
-    splash.show()
-
-    splash.update("• Initializing I2C bus")
-    try:
-        init_sensors()
-        splash.update("• Sensors detected\n• Warming gas sensor…")
-    except Exception as e:
-        splash.update(f"Sensor init failed:\n{e}")
-        QtCore.QTimer.singleShot(4000, app.quit)
-        sys.exit(app.exec_())
-
-    # Allow BME688 warm-up time (non-blocking)
-    QtCore.QTimer.singleShot(2500, splash.close)
-
     w = Dashboard()
-    QtCore.QTimer.singleShot(2500, w.show)
-
+    w.show()
     sys.exit(app.exec_())
 
