@@ -11,23 +11,27 @@ RUNTIME_DIR = "/var/run/lgpio"
 try:
     os.makedirs(RUNTIME_DIR, exist_ok=True)
     os.environ["LGPIO_FILEDIR"] = RUNTIME_DIR
+    os.chdir(RUNTIME_DIR)   
 except PermissionError:
     fallback = os.path.expanduser("~/.lgpio")
     os.makedirs(fallback, exist_ok=True)
     os.environ["LGPIO_FILEDIR"] = fallback
+    os.chdir(fallback)
 
 # ---------------------------
-# Normal app setup
+# Restore app working dir
 # ---------------------------
 BASE_DIR = Path(__file__).resolve().parent
 os.chdir(BASE_DIR)
 ASSETS_DIR = BASE_DIR / "assets"
 
+# ---------------------------
+# Normal imports
+# ---------------------------
 import random
 import json
 import time
 from PyQt5 import QtWidgets, QtGui, QtCore
-
 
 # ===========================
 # SENSOR BACKEND (REAL DATA)
