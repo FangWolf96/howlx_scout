@@ -5,7 +5,7 @@
 
 # ---- MUST be first: lgpio runtime directory ----
 import os
-os.environ["LGPIO_FILEDIR"] = "/tmp"
+os.environ["LGPIO_FILEDIR"] = "/var/run/lgpio"
 
 # ----------------------------------------------
 import sys
