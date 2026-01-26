@@ -27,18 +27,36 @@ from PyQt5 import QtWidgets, QtGui, QtCore
 WIDTH, HEIGHT = 800, 480
 
 # =========================================================
-# SENSOR LIB IMPORTS 
+# SENSOR LIB IMPORTS (per-sensor, so one missing lib doesn't kill all)
 # =========================================================
+SENSORS_AVAILABLE = True
+HAS_SCD4X = HAS_BME680 = HAS_PM25 = False
+
 try:
     import board
     import busio
-    import adafruit_scd4x
-    import adafruit_bme680
-    import adafruit_pm25
-    SENSORS_AVAILABLE = True
 except Exception as e:
-    print("Sensor libs not available:", repr(e))
+    print("Core I2C libs not available:", repr(e))
     SENSORS_AVAILABLE = False
+
+if SENSORS_AVAILABLE:
+    try:
+        import adafruit_scd4x
+        HAS_SCD4X = True
+    except Exception as e:
+        print("SCD4X lib missing:", repr(e))
+
+    try:
+        import adafruit_bme680
+        HAS_BME680 = True
+    except Exception as e:
+        print("BME680 lib missing:", repr(e))
+
+    try:
+        import adafruit_pm25
+        HAS_PM25 = True
+    except Exception as e:
+        print("PM25 lib missing:", repr(e))
 
 # =========================================================
 # GLOBAL SENSOR STATE (single source of truth)
@@ -122,18 +140,25 @@ def init_sensors():
                 SENSOR_STATUS["pm25"] = SensorState.STALE
             return True
 
-        has_scd41 = 0x62 in addrs
-        has_bme   = (0x76 in addrs) or (0x77 in addrs)
-        has_pm25  = 0x12 in addrs  # ✅ PMSA003I I2C address is commonly 0x12
+        # IMPORTANT: gate by per-lib flags (from the import block)
+        has_scd41 = HAS_SCD4X and (0x62 in addrs)
+        has_bme   = HAS_BME680 and ((0x76 in addrs) or (0x77 in addrs))
+        has_pm25  = HAS_PM25 and (0x12 in addrs)  # PMSA003I commonly 0x12
 
         # ---- SCD41 ----
         if has_scd41:
             _scd41_miss = 0
             if _scd41 is None:
-                _scd41 = adafruit_scd4x.SCD4X(_i2c)
-                _scd41.start_periodic_measurement()
-                SENSOR_STATUS["scd41"] = SensorState.WARMUP
-                SENSOR_SINCE["scd41"] = time.time()
+                try:
+                    _scd41 = adafruit_scd4x.SCD4X(_i2c)
+                    _scd41.start_periodic_measurement()
+                    SENSOR_STATUS["scd41"] = SensorState.WARMUP
+                    SENSOR_SINCE["scd41"] = time.time()
+                except Exception as e:
+                    print("SCD41 init error:", repr(e))
+                    _scd41 = None
+                    SENSOR_STATUS["scd41"] = SensorState.ERROR
+                    SENSOR_SINCE["scd41"] = None
             else:
                 if SENSOR_STATUS["scd41"] in (SensorState.MISSING, SensorState.ERROR, SensorState.STALE):
                     SENSOR_STATUS["scd41"] = SensorState.WARMUP
@@ -153,10 +178,16 @@ def init_sensors():
         if has_bme:
             _bme688_miss = 0
             if _bme688 is None:
-                _bme688 = adafruit_bme680.Adafruit_BME680_I2C(_i2c)
-                _bme688.sea_level_pressure = 1013.25
-                SENSOR_STATUS["bme688"] = SensorState.WARMUP
-                SENSOR_SINCE["bme688"] = time.time()
+                try:
+                    _bme688 = adafruit_bme680.Adafruit_BME680_I2C(_i2c)
+                    _bme688.sea_level_pressure = 1013.25
+                    SENSOR_STATUS["bme688"] = SensorState.WARMUP
+                    SENSOR_SINCE["bme688"] = time.time()
+                except Exception as e:
+                    print("BME688 init error:", repr(e))
+                    _bme688 = None
+                    SENSOR_STATUS["bme688"] = SensorState.ERROR
+                    SENSOR_SINCE["bme688"] = None
             else:
                 if SENSOR_STATUS["bme688"] in (SensorState.MISSING, SensorState.ERROR, SensorState.STALE):
                     SENSOR_STATUS["bme688"] = SensorState.WARMUP
@@ -176,9 +207,15 @@ def init_sensors():
         if has_pm25:
             _pm25_miss = 0
             if _pm25 is None:
-                _pm25 = adafruit_pm25.i2c.PM25_I2C(_i2c, reset_pin=None)
-                SENSOR_STATUS["pm25"] = SensorState.WARMUP
-                SENSOR_SINCE["pm25"] = time.time()
+                try:
+                    _pm25 = adafruit_pm25.i2c.PM25_I2C(_i2c, reset_pin=None)
+                    SENSOR_STATUS["pm25"] = SensorState.WARMUP
+                    SENSOR_SINCE["pm25"] = time.time()
+                except Exception as e:
+                    print("PM2.5 init error:", repr(e))
+                    _pm25 = None
+                    SENSOR_STATUS["pm25"] = SensorState.ERROR
+                    SENSOR_SINCE["pm25"] = None
             else:
                 if SENSOR_STATUS["pm25"] in (SensorState.MISSING, SensorState.ERROR, SensorState.STALE):
                     SENSOR_STATUS["pm25"] = SensorState.WARMUP
@@ -196,18 +233,18 @@ def init_sensors():
 
         # CO still not installed
         SENSOR_STATUS["co"] = SensorState.MISSING
-
         return True
 
     except Exception as e:
-        print("init_sensors() failed:", repr(e))
-        SENSOR_STATUS["scd41"] = SensorState.ERROR
-        SENSOR_STATUS["bme688"] = SensorState.ERROR
-        SENSOR_STATUS["pm25"] = SensorState.ERROR
+        # Core bus-level failure only
+        print("init_sensors() bus failure:", repr(e))
+        if _scd41 is not None:
+            SENSOR_STATUS["scd41"] = SensorState.ERROR
+        if _bme688 is not None:
+            SENSOR_STATUS["bme688"] = SensorState.ERROR
+        if _pm25 is not None:
+            SENSOR_STATUS["pm25"] = SensorState.ERROR
         return False
-
-
-
 
 
 # ---------------------------
