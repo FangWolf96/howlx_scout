@@ -56,7 +56,8 @@ class SensorState(Enum):
     MISSING = 0
     WARMUP  = 1
     READY   = 2
-    ERROR   = 3
+    STALE   = 3
+    ERROR   = 4
 
 SENSOR_STATUS = {
     "scd41":  SensorState.MISSING,
@@ -83,6 +84,7 @@ def _i2c_scan(i2c):
             pass
     return set(addrs)
 
+
 def init_sensors():
     global _i2c, _scd41, _bme688, _scd41_miss, _bme688_miss
 
@@ -101,17 +103,19 @@ def init_sensors():
 
         addrs = _i2c_scan(_i2c)
 
-        # If scan returns empty, treat as transient bus hiccup.
-        # Do NOT demote sensors to MISSING on this cycle.
+        # Empty scan = transient bus hiccup.
+        # Mark installed sensors as STALE (blinking) instead of MISSING.
         if not addrs:
+            if _scd41 is not None and SENSOR_STATUS["scd41"] == SensorState.READY:
+                SENSOR_STATUS["scd41"] = SensorState.STALE
+            if _bme688 is not None and SENSOR_STATUS["bme688"] == SensorState.READY:
+                SENSOR_STATUS["bme688"] = SensorState.STALE
             return True
 
         has_scd41 = 0x62 in addrs
         has_bme = (0x76 in addrs) or (0x77 in addrs)
 
-        # --------------------
-        # SCD41 presence logic
-        # --------------------
+        # ---- SCD41 ----
         if has_scd41:
             _scd41_miss = 0
             if _scd41 is None:
@@ -120,22 +124,21 @@ def init_sensors():
                 SENSOR_STATUS["scd41"] = SensorState.WARMUP
                 SENSOR_SINCE["scd41"] = time.time()
             else:
-                # keep current status; read loop will promote READY
-                if SENSOR_STATUS["scd41"] in (SensorState.MISSING, SensorState.ERROR):
+                if SENSOR_STATUS["scd41"] in (SensorState.MISSING, SensorState.ERROR, SensorState.STALE):
                     SENSOR_STATUS["scd41"] = SensorState.WARMUP
-                    SENSOR_SINCE["scd41"] = time.time()
+                    if SENSOR_SINCE.get("scd41") is None:
+                        SENSOR_SINCE["scd41"] = time.time()
         else:
             _scd41_miss += 1
-            # Only declare missing after consecutive misses
             if _scd41_miss >= MISS_LIMIT:
                 _scd41 = None
                 SENSOR_STATUS["scd41"] = SensorState.MISSING
                 SENSOR_SINCE["scd41"] = None
-            # else: keep last known status and object this cycle
+            else:
+                if _scd41 is not None:
+                    SENSOR_STATUS["scd41"] = SensorState.STALE
 
-        # --------------------
-        # BME688 presence logic
-        # --------------------
+        # ---- BME688 ----
         if has_bme:
             _bme688_miss = 0
             if _bme688 is None:
@@ -144,18 +147,21 @@ def init_sensors():
                 SENSOR_STATUS["bme688"] = SensorState.WARMUP
                 SENSOR_SINCE["bme688"] = time.time()
             else:
-                if SENSOR_STATUS["bme688"] in (SensorState.MISSING, SensorState.ERROR):
+                if SENSOR_STATUS["bme688"] in (SensorState.MISSING, SensorState.ERROR, SensorState.STALE):
                     SENSOR_STATUS["bme688"] = SensorState.WARMUP
-                    SENSOR_SINCE["bme688"] = time.time()
+                    if SENSOR_SINCE.get("bme688") is None:
+                        SENSOR_SINCE["bme688"] = time.time()
         else:
             _bme688_miss += 1
             if _bme688_miss >= MISS_LIMIT:
                 _bme688 = None
                 SENSOR_STATUS["bme688"] = SensorState.MISSING
                 SENSOR_SINCE["bme688"] = None
-            # else: keep last known status and object this cycle
+            else:
+                if _bme688 is not None:
+                    SENSOR_STATUS["bme688"] = SensorState.STALE
 
-        # Not installed yet
+        # PM2.5 + CO not installed yet
         SENSOR_STATUS["pm25"] = SensorState.MISSING
         SENSOR_STATUS["co"] = SensorState.MISSING
 
@@ -166,6 +172,7 @@ def init_sensors():
         SENSOR_STATUS["scd41"] = SensorState.ERROR
         SENSOR_STATUS["bme688"] = SensorState.ERROR
         return False
+
 
 
 
@@ -446,7 +453,9 @@ def nval(x, default=0.0):
     return default if x is None else x
 
 def installed_state(sensor_key: str) -> bool:
-    return SENSOR_STATUS.get(sensor_key) in (SensorState.WARMUP, SensorState.READY)
+    return SENSOR_STATUS.get(sensor_key) in (
+        SensorState.WARMUP, SensorState.READY, SensorState.STALE
+    )
 
 
 # ---------------------------
@@ -2008,7 +2017,7 @@ class Dashboard(QtWidgets.QWidget):
         elif state == SensorState.READY:
             dot.setStyleSheet("font-size:16px; color:#4caf50;")  # green
         else:
-            # warmup -> flashing yellow
+            # WARMUP or STALE -> flashing yellow
             color = "#ffeb3b" if self._flash else "#b59b00"
             dot.setStyleSheet(f"font-size:16px; color:{color};")
 
