@@ -9,6 +9,59 @@ os.environ["QT_QPA_EGLFS_PHYSICAL_WIDTH"] = "154"
 os.environ["QT_QPA_EGLFS_PHYSICAL_HEIGHT"] = "86"
 os.environ["QT_FONT_DPI"] = "96"
 
+# ===========================
+# SENSOR BACKEND (REAL DATA)
+# ===========================
+import board
+import busio
+import adafruit_scd4x
+import adafruit_bme680
+
+_i2c = None
+_scd41 = None
+_bme688 = None
+
+def init_sensors():
+    global _i2c, _scd41, _bme688
+
+    _i2c = busio.I2C(board.SCL, board.SDA)
+
+    _scd41 = adafruit_scd4x.SCD4X(_i2c)
+    _scd41.start_periodic_measurement()
+
+    _bme688 = adafruit_bme680.Adafruit_BME680_I2C(_i2c)
+
+def read_sensors():
+    # --- CO₂ (SCD41) ---
+    if _scd41 and _scd41.data_ready:
+        co2 = _scd41.CO2
+    else:
+        co2 = 400  # safe fallback
+
+    # --- BME688 ---
+    temp_c = _bme688.temperature
+    humidity = _bme688.relative_humidity
+    gas = _bme688.gas  # ohms
+
+    # Temp °F
+    temp_f = round((temp_c * 9 / 5) + 32, 1)
+
+    # VOC index (simple, stable mapping)
+    voc = round(
+        max(0.1, min(3.0, 3.0 - (gas / 300000))),
+        2
+    )
+
+    return {
+        "co2": int(co2),
+        "pm25": 0.0,        # no PM sensor yet
+        "voc": voc,
+        "temp": temp_f,
+        "humidity": round(humidity, 1),
+        "co": 0.0           # no CO sensor yet
+    }
+
+
 import sys
 import random
 import json
@@ -1534,7 +1587,7 @@ class Dashboard(QtWidgets.QWidget):
     # Data update
     # ---------------------------
     def update_data(self):
-        d = mock_readings()
+        d = read_sensors()
 
         # NEW unified evaluation
         s, breakdown, how_to, state = evaluate_readings(d, self.history)
@@ -1772,8 +1825,9 @@ class Dashboard(QtWidgets.QWidget):
 # App start
 # ---------------------------
 if __name__ == "__main__":
-    app = QtWidgets.QApplication(sys.argv)
+    init_sensors()   
 
+    app = QtWidgets.QApplication(sys.argv)
     w = Dashboard()
     w.show()
     sys.exit(app.exec_())
