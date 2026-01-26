@@ -66,7 +66,6 @@ def init_sensors():
     #Gas / VOC Burn In
     _bme688.sea_level_pressure = 1013.25
     _bme688.set_gas_heater(320, 150)  # 320°C for 150ms
-    _bme688.select_gas_heater_profile(0)
 
 
 def read_sensors():
