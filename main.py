@@ -2,16 +2,9 @@
 from pathlib import Path
 import os
 import sys
-BASE_DIR = Path(__file__).resolve().parent
-os.chdir(BASE_DIR)
-ASSETS_DIR = BASE_DIR / "assets"
-import random
-import json
-import time
-from PyQt5 import QtWidgets, QtGui, QtCore
 
 # ===========================
-# LGPIO HARD FIX (SELF-HEAL)
+# LGPIO RUNTIME FIX (Pi 5)
 # ===========================
 RUNTIME_DIR = "/var/run/lgpio"
 
@@ -22,6 +15,18 @@ except PermissionError:
     fallback = os.path.expanduser("~/.lgpio")
     os.makedirs(fallback, exist_ok=True)
     os.environ["LGPIO_FILEDIR"] = fallback
+
+# ---------------------------
+# Normal app setup
+# ---------------------------
+BASE_DIR = Path(__file__).resolve().parent
+os.chdir(BASE_DIR)
+ASSETS_DIR = BASE_DIR / "assets"
+
+import random
+import json
+import time
+from PyQt5 import QtWidgets, QtGui, QtCore
 
 
 # ===========================
