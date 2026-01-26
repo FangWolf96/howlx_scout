@@ -32,6 +32,7 @@ except Exception as e:
 # === SENSOR INIT ===
 _i2c = None
 _scd41 = None
+_scd41_last_co2 = None
 _bme688 = None
 from enum import Enum
 
