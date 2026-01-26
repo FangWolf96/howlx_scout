@@ -162,33 +162,31 @@ def mock_readings():
     
 # === SENSOR BACKEND ===
 def read_sensors():
+    global _scd41_last_co2
+
     ok = init_sensors()
     if not ok:
         return mock_readings()
 
-# --- SCD41 CO2 ---
-global _scd41_last_co2
-co2 = None
+    # --- SCD41 CO2 ---
+    co2 = None
+    if _scd41 is not None:
+        try:
+            warmup_s = 10
+            since = SENSOR_SINCE.get("scd41") or time.time()
+            warmed = (time.time() - since) >= warmup_s
 
-if _scd41 is not None:
-    try:
-        # Warmup window after starting periodic measurement
-        warmup_s = 10  # seconds; tune if you want
-        since = SENSOR_SINCE.get("scd41") or time.time()
-        warmed = (time.time() - since) >= warmup_s
+            if _scd41.data_ready:
+                co2 = int(_scd41.co2)
+                _scd41_last_co2 = co2
+                SENSOR_STATUS["scd41"] = SensorState.READY
+            else:
+                # No new sample: keep last known
+                co2 = _scd41_last_co2
+                SENSOR_STATUS["scd41"] = SensorState.READY if warmed else SensorState.WARMUP
 
-        if _scd41.data_ready:
-            co2 = int(_scd41.co2)
-            _scd41_last_co2 = co2
-            SENSOR_STATUS["scd41"] = SensorState.READY
-        else:
-            # No new sample this tick: keep last value, don't downgrade state
-            co2 = _scd41_last_co2
-            SENSOR_STATUS["scd41"] = SensorState.READY if warmed else SensorState.WARMUP
-
-    except Exception:
-        SENSOR_STATUS["scd41"] = SensorState.ERROR
-
+        except Exception:
+            SENSOR_STATUS["scd41"] = SensorState.ERROR
 
     # --- BME688 temp/humidity + gas ---
     temp_f = None
@@ -201,9 +199,8 @@ if _scd41 is not None:
             humidity = _bme688.relative_humidity
             gas = getattr(_bme688, "gas", None)
 
-            # warmup rule for VOC proxy 
             warmup_s = 60
-            since = SENSOR_SINCE["bme688"] or time.time()
+            since = SENSOR_SINCE.get("bme688") or time.time()
             if (time.time() - since) < warmup_s:
                 SENSOR_STATUS["bme688"] = SensorState.WARMUP
             else:
@@ -212,12 +209,11 @@ if _scd41 is not None:
         except Exception:
             SENSOR_STATUS["bme688"] = SensorState.ERROR
 
-    # VOC proxy only if gas available AND warmup passed
     voc = None
     if gas is not None and SENSOR_STATUS["bme688"] == SensorState.READY:
         voc = voc_proxy_from_gas_ohms(float(gas))
 
-    # Fill safe fallbacks for UI if some values missing
+    # Safe fallbacks for UI
     if co2 is None:
         co2 = 450
     if temp_f is None:
@@ -228,7 +224,7 @@ if _scd41 is not None:
     return {
         "co2": int(co2),
         "pm25": None,      # not installed yet
-        "voc": voc,        # proxy (None until BME688 ready)
+        "voc": voc,        # None until BME688 ready
         "temp": round(float(temp_f), 1),
         "humidity": round(float(humidity), 1),
         "co": None,        # not installed yet
