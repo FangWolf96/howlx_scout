@@ -1,5 +1,16 @@
+#!/usr/bin/env python3
 import os
 
+# ===========================
+# LGPIO HARD FIX (MUST BE FIRST)
+# ===========================
+RUNTIME_DIR = "/var/run/lgpio"
+
+os.environ["LGPIO_FILEDIR"] = RUNTIME_DIR
+os.environ["HOME"] = RUNTIME_DIR
+
+# Change CWD BEFORE lgpio is imported
+os.chdir(RUNTIME_DIR)
 # ---------------------------
 # FORCE CORRECT 800x480 SCALING ON PI TOUCH
 # ---------------------------
