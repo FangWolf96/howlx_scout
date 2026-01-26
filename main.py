@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
+from pathlib import Path
 import os
+import sys
+BASE_DIR = Path(__file__).resolve().parent
+os.chdir(BASE_DIR)
+ASSETS_DIR = BASE_DIR / "assets"
+import random
+import json
+import time
+from PyQt5 import QtWidgets, QtGui, QtCore
 
 # ===========================
 # LGPIO HARD FIX (SELF-HEAL)
@@ -9,15 +18,11 @@ RUNTIME_DIR = "/var/run/lgpio"
 try:
     os.makedirs(RUNTIME_DIR, exist_ok=True)
     os.environ["LGPIO_FILEDIR"] = RUNTIME_DIR
-    os.environ["HOME"] = RUNTIME_DIR
-    os.chdir(RUNTIME_DIR)
 except PermissionError:
-    # Fallback for dev environments
     fallback = os.path.expanduser("~/.lgpio")
     os.makedirs(fallback, exist_ok=True)
     os.environ["LGPIO_FILEDIR"] = fallback
-    os.environ["HOME"] = fallback
-    os.chdir(fallback)
+
 
 # ===========================
 # SENSOR BACKEND (REAL DATA)
@@ -41,43 +46,106 @@ def init_sensors():
 
     _bme688 = adafruit_bme680.Adafruit_BME680_I2C(_i2c)
 
+    #Gas / VOC Burn In
+    _bme688.sea_level_pressure = 1013.25
+    _bme688.set_gas_heater(320, 150)  # 320°C for 150ms
+    _bme688.select_gas_heater_profile(0)
+
+
 def read_sensors():
-    # --- CO₂ (SCD41) ---
-    if _scd41 and _scd41.data_ready:
-        co2 = _scd41.CO2
-    else:
-        co2 = 400  # safe fallback
+    global _i2c, _scd41, _bme688
 
-    # --- BME688 ---
-    temp_c = _bme688.temperature
-    humidity = _bme688.relative_humidity
-    gas = _bme688.gas  # ohms
+    # ---------------------------
+    # Self-heal sensor init
+    # ---------------------------
+    if _i2c is None or _scd41 is None or _bme688 is None:
+        try:
+            init_sensors()
+        except Exception:
+            return {
+                "co2": 400,
+                "pm25": 0.0,
+                "voc": None,
+                "temp": 72.0,
+                "humidity": 40.0,
+                "co": 0.0,
+                "_present": {
+                    "co2": False,
+                    "bme": False,
+                    "voc": False,
+                }
+            }
 
-    # Temp °F
-    temp_f = round((temp_c * 9 / 5) + 32, 1)
-
-    # VOC index (simple, stable mapping)
-    voc = round(
-        max(0.1, min(3.0, 3.0 - (gas / 300000))),
-        2
-    )
-
-    return {
-        "co2": int(co2),
-        "pm25": 0.0,        # no PM sensor yet
-        "voc": voc,
-        "temp": temp_f,
-        "humidity": round(humidity, 1),
-        "co": 0.0           # no CO sensor yet
+    sensors_present = {
+        "co2": False,
+        "bme": False,
+        "voc": False,
     }
 
+    try:
+        # ---------- CO₂ (SCD41) ----------
+        if _scd41 and _scd41.data_ready:
+            co2 = int(_scd41.CO2)
+            sensors_present["co2"] = True
+        else:
+            co2 = 400  # safe fallback
 
-import sys
-import random
-import json
-import time
-from pathlib import Path
-from PyQt5 import QtWidgets, QtGui, QtCore
+        # ---------- BME688 ----------
+        if _bme688:
+            sensors_present["bme"] = True
+
+            temp_c = _bme688.temperature
+            humidity = _bme688.relative_humidity
+            gas = _bme688.gas
+
+            temp_f = round((temp_c * 9 / 5) + 32, 1)
+            humidity = round(humidity, 1)
+
+            # ---------- VOC handling ----------
+            if gas and gas > 0:
+                sensors_present["voc"] = True
+
+                # Stable bounded placeholder index
+                voc = round(
+                    max(0.1, min(3.0, 3.0 - (gas / 300000))),
+                    2
+                )
+            else:
+                voc = None  # warming up / not ready
+        else:
+            temp_f = 72.0
+            humidity = 40.0
+            voc = None
+
+        return {
+            "co2": co2,
+            "pm25": 0.0,           # PM sensor not installed yet
+            "voc": voc,
+            "temp": temp_f,
+            "humidity": humidity,
+            "co": 0.0,             # CO sensor not installed yet
+            "_present": sensors_present
+        }
+
+    except Exception:
+        # ---------------------------
+        # Absolute safety fallback
+        # ---------------------------
+        return {
+            "co2": 400,
+            "pm25": 0.0,
+            "voc": None,
+            "temp": 72.0,
+            "humidity": 40.0,
+            "co": 0.0,
+            "_present": {
+                "co2": False,
+                "bme": False,
+                "voc": False,
+            }
+        }
+
+
 
 WIDTH, HEIGHT = 800, 480
 # ---------------------------
@@ -88,7 +156,7 @@ CO_DANGER_THRESHOLD = 35  # ppm
 
 def add_watermark(parent, x, y, w=350, opacity=0.06):
     label = QtWidgets.QLabel(parent)
-    pix = QtGui.QPixmap("assets/logo.png").scaled(
+    pix = QtGui.QPixmap(str(ASSETS_DIR / "logo.png")).scaled(
         w, w,
         QtCore.Qt.KeepAspectRatio,
         QtCore.Qt.SmoothTransformation
@@ -824,7 +892,7 @@ class IdleOverlay(QtWidgets.QWidget):
         layout.setAlignment(QtCore.Qt.AlignCenter)
 
         self.logo = QtWidgets.QLabel()
-        pix = QtGui.QPixmap("assets/logo.png").scaled(
+        pix = QtGui.QPixmap(str(ASSETS_DIR / "logo.png")).scaled(
             220, 220,
             QtCore.Qt.KeepAspectRatio,
             QtCore.Qt.SmoothTransformation
@@ -944,7 +1012,7 @@ class DetailOverlay(QtWidgets.QWidget):
         top = QtWidgets.QHBoxLayout()
 
         logo = QtWidgets.QLabel()
-        logo_pix = QtGui.QPixmap("assets/logo.png").scaled(
+        logo_pix = QtGui.QPixmap(str(ASSETS_DIR / "logo.png")).scaled(
             80, 80,
             QtCore.Qt.KeepAspectRatio,
             QtCore.Qt.SmoothTransformation
@@ -1230,6 +1298,19 @@ class Dashboard(QtWidgets.QWidget):
         self.last_co = 0
         self.co_test_mode = False
         # ---------------------------
+        # Sensor Presence Helpers
+        # ---------------------------
+    def set_sensor_status(self, tile_label, present: bool):
+        tile = self.tiles[tile_label].parent()
+        dot = tile.findChild(QtWidgets.QLabel, "status")
+        if not dot:
+            return
+        dot.setStyleSheet(
+            "font-size:14px; color:#4caf50;" if present
+            else "font-size:14px; color:#f44336;"
+        )
+
+        # ---------------------------
         # Survey mode state
         # ---------------------------
         self.survey_mode = False
@@ -1296,7 +1377,7 @@ class Dashboard(QtWidgets.QWidget):
 
         # Logo (solid, visible)
         logo = QtWidgets.QLabel()
-        logo_pix = QtGui.QPixmap("assets/logo.png").scaled(
+        logo_pix = QtGui.QPixmap(str(ASSETS_DIR / "logo.png")).scaled(
             200, 200,
             QtCore.Qt.KeepAspectRatio,
             QtCore.Qt.SmoothTransformation
@@ -1548,32 +1629,43 @@ class Dashboard(QtWidgets.QWidget):
     # Tile builder
     # ---------------------------
     def _build_tile(self, label):
-        frame = QtWidgets.QFrame()
-        frame.setStyleSheet(
-            "background:#1a1a1a; border-radius:14px;"
-        )
+    frame = QtWidgets.QFrame()
+    frame.setStyleSheet("background:#1a1a1a; border-radius:14px;")
 
-        layout = QtWidgets.QVBoxLayout(frame)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(6)
+    layout = QtWidgets.QVBoxLayout(frame)
+    layout.setContentsMargins(14, 14, 14, 14)
+    layout.setSpacing(6)
 
-        title = QtWidgets.QLabel(label)
-        title.setStyleSheet("font-size:16px; color:#aaaaaa;")
+    # --- Title row with status dot ---
+    title_row = QtWidgets.QHBoxLayout()
 
-        value = QtWidgets.QLabel("--")
-        value.setObjectName("value")
-        value.setStyleSheet("font-size:38px; font-weight:bold;")
+    status = QtWidgets.QLabel("●")
+    status.setObjectName("status")
+    status.setStyleSheet("font-size:14px; color:#f44336;")  # default red
+    status.setFixedWidth(14)
 
-        badge = QtWidgets.QLabel("")
-        badge.setObjectName("badge")
-        badge.setStyleSheet("font-size:14px; color:#888888;")
+    title = QtWidgets.QLabel(label)
+    title.setStyleSheet("font-size:16px; color:#aaaaaa;")
 
-        layout.addWidget(title)
-        layout.addWidget(value)
-        layout.addWidget(badge)
-        layout.addStretch()
+    title_row.addWidget(status)
+    title_row.addWidget(title)
+    title_row.addStretch()
 
-        return frame
+    value = QtWidgets.QLabel("--")
+    value.setObjectName("value")
+    value.setStyleSheet("font-size:38px; font-weight:bold;")
+
+    badge = QtWidgets.QLabel("")
+    badge.setObjectName("badge")
+    badge.setStyleSheet("font-size:14px; color:#888888;")
+
+    layout.addLayout(title_row)
+    layout.addWidget(value)
+    layout.addWidget(badge)
+    layout.addStretch()
+
+    return frame
+
 
 
 
@@ -1598,6 +1690,13 @@ class Dashboard(QtWidgets.QWidget):
     # ---------------------------
     def update_data(self):
         d = read_sensors()
+        self.set_sensor_status("CO₂ (ppm)", d.get("_co2_ok", False))
+        self.set_sensor_status("VOC Index", d.get("_voc_ok", False))
+        self.set_sensor_status("Temp (°F)", d.get("_bme_ok", False))
+        self.set_sensor_status("Humidity (%)", d.get("_bme_ok", False))
+        self.set_sensor_status("PM2.5 (µg/m³)", False)
+        self.set_sensor_status("CO (ppm)", False)
+
 
         # NEW unified evaluation
         s, breakdown, how_to, state = evaluate_readings(d, self.history)
@@ -1835,10 +1934,10 @@ class Dashboard(QtWidgets.QWidget):
 # App start
 # ---------------------------
 if __name__ == "__main__":
+    app = QtWidgets.QApplication(sys.argv)
+
     init_sensors()   
 
-    app = QtWidgets.QApplication(sys.argv)
     w = Dashboard()
     w.show()
     sys.exit(app.exec_())
-
