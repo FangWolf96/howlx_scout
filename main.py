@@ -2,23 +2,22 @@
 import os
 
 # ===========================
-# LGPIO HARD FIX (MUST BE FIRST)
+# LGPIO HARD FIX (SELF-HEAL)
 # ===========================
 RUNTIME_DIR = "/var/run/lgpio"
 
-os.environ["LGPIO_FILEDIR"] = RUNTIME_DIR
-os.environ["HOME"] = RUNTIME_DIR
-
-# Change CWD BEFORE lgpio is imported
-os.chdir(RUNTIME_DIR)
-# ---------------------------
-# FORCE CORRECT 800x480 SCALING ON PI TOUCH
-# ---------------------------
-os.environ["QT_QPA_PLATFORM"] = "eglfs"
-os.environ["QT_QPA_EGLFS_HIDECURSOR"] = "1"
-os.environ["QT_QPA_EGLFS_PHYSICAL_WIDTH"] = "154"
-os.environ["QT_QPA_EGLFS_PHYSICAL_HEIGHT"] = "86"
-os.environ["QT_FONT_DPI"] = "96"
+try:
+    os.makedirs(RUNTIME_DIR, exist_ok=True)
+    os.environ["LGPIO_FILEDIR"] = RUNTIME_DIR
+    os.environ["HOME"] = RUNTIME_DIR
+    os.chdir(RUNTIME_DIR)
+except PermissionError:
+    # Fallback for dev environments
+    fallback = os.path.expanduser("~/.lgpio")
+    os.makedirs(fallback, exist_ok=True)
+    os.environ["LGPIO_FILEDIR"] = fallback
+    os.environ["HOME"] = fallback
+    os.chdir(fallback)
 
 # ===========================
 # SENSOR BACKEND (REAL DATA)
