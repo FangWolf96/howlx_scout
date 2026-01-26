@@ -80,6 +80,9 @@ def init_sensors():
             _i2c = busio.I2C(board.SCL, board.SDA)
 
         addrs = _i2c_scan(_i2c)
+        if not addrs:
+            time.sleep(0.05)
+            addrs = _i2c_scan(_i2c)
 
         # Known I2C addresses
         has_scd41 = 0x62 in addrs
@@ -213,9 +216,11 @@ def read_sensors():
     if gas is not None and SENSOR_STATUS["bme688"] == SensorState.READY:
         voc = voc_proxy_from_gas_ohms(float(gas))
 
-    # Safe fallbacks for UI
-    if co2 is None:
+    ## Only fallback to a number if the sensor exists but no sample yet.
+    # If sensor is missing, keep None so UI shows "--".
+    if co2 is None and _scd41 is not None:
         co2 = 450
+
     if temp_f is None:
         temp_f = 72.0
     if humidity is None:
@@ -1859,7 +1864,7 @@ class Dashboard(QtWidgets.QWidget):
         self.update_alert_state_ui()
 
 
-        self.tiles["CO₂ (ppm)"].setText(str(d["co2"]))
+        self.tiles["CO₂ (ppm)"].setText("--" if d.get("co2") is None else str(d["co2"]))
         self.tiles["PM2.5 (µg/m³)"].setText("--" if d.get("pm25") is None else str(d["pm25"]))
         self.tiles["VOC Index"].setText("--" if d.get("voc") is None else str(d["voc"]))
         self.tiles["Temp (°F)"].setText(str(d["temp"]))
