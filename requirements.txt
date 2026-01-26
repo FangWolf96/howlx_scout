@@ -1,0 +1,11 @@
+# ---- Adafruit Blinka stack (I2C/GPIO abstraction) ----
+adafruit-blinka>=8.50.0
+adafruit-platformdetect>=3.70.0
+adafruit-pureio>=1.1.11
+
+# ---- Sensors ----
+adafruit-circuitpython-scd4x>=1.4.7
+adafruit-circuitpython-bme680>=3.7.10
+
+# ---- Quality-of-life ----
+typing_extensions>=4.8.0
