@@ -84,11 +84,15 @@ def _i2c_scan(i2c):
     return set(addrs)
 
 def init_sensors():
-    global _i2c, _scd41, _bme688
+    global _i2c, _scd41, _bme688, _scd41_miss, _bme688_miss
 
     if not SENSORS_AVAILABLE:
         SENSOR_STATUS["scd41"] = SensorState.MISSING
         SENSOR_STATUS["bme688"] = SensorState.MISSING
+        SENSOR_SINCE["scd41"] = None
+        SENSOR_SINCE["bme688"] = None
+        _scd41 = None
+        _bme688 = None
         return False
 
     try:
@@ -96,40 +100,62 @@ def init_sensors():
             _i2c = busio.I2C(board.SCL, board.SDA)
 
         addrs = _i2c_scan(_i2c)
-        if not addrs:
-            time.sleep(0.05)
-            addrs = _i2c_scan(_i2c)
 
-        # Known I2C addresses
+        # If scan returns empty, treat as transient bus hiccup.
+        # Do NOT demote sensors to MISSING on this cycle.
+        if not addrs:
+            return True
+
         has_scd41 = 0x62 in addrs
         has_bme = (0x76 in addrs) or (0x77 in addrs)
 
-        # ---- SCD41 ----
-        if not has_scd41:
-            _scd41 = None
-            SENSOR_STATUS["scd41"] = SensorState.MISSING
-            SENSOR_SINCE["scd41"] = None
-        else:
+        # --------------------
+        # SCD41 presence logic
+        # --------------------
+        if has_scd41:
+            _scd41_miss = 0
             if _scd41 is None:
                 _scd41 = adafruit_scd4x.SCD4X(_i2c)
                 _scd41.start_periodic_measurement()
                 SENSOR_STATUS["scd41"] = SensorState.WARMUP
                 SENSOR_SINCE["scd41"] = time.time()
-
-        # ---- BME688 ----
-        if not has_bme:
-            _bme688 = None
-            SENSOR_STATUS["bme688"] = SensorState.MISSING
-            SENSOR_SINCE["bme688"] = None
+            else:
+                # keep current status; read loop will promote READY
+                if SENSOR_STATUS["scd41"] in (SensorState.MISSING, SensorState.ERROR):
+                    SENSOR_STATUS["scd41"] = SensorState.WARMUP
+                    SENSOR_SINCE["scd41"] = time.time()
         else:
+            _scd41_miss += 1
+            # Only declare missing after consecutive misses
+            if _scd41_miss >= MISS_LIMIT:
+                _scd41 = None
+                SENSOR_STATUS["scd41"] = SensorState.MISSING
+                SENSOR_SINCE["scd41"] = None
+            # else: keep last known status and object this cycle
+
+        # --------------------
+        # BME688 presence logic
+        # --------------------
+        if has_bme:
+            _bme688_miss = 0
             if _bme688 is None:
                 _bme688 = adafruit_bme680.Adafruit_BME680_I2C(_i2c)
                 _bme688.sea_level_pressure = 1013.25
-                # temp/humidity are usable immediately; gas/VOC proxy needs warmup
                 SENSOR_STATUS["bme688"] = SensorState.WARMUP
                 SENSOR_SINCE["bme688"] = time.time()
+            else:
+                if SENSOR_STATUS["bme688"] in (SensorState.MISSING, SensorState.ERROR):
+                    SENSOR_STATUS["bme688"] = SensorState.WARMUP
+                    SENSOR_SINCE["bme688"] = time.time()
+        else:
+            _bme688_miss += 1
+            if _bme688_miss >= MISS_LIMIT:
+                _bme688 = None
+                SENSOR_STATUS["bme688"] = SensorState.MISSING
+                SENSOR_SINCE["bme688"] = None
+            # else: keep last known status and object this cycle
 
-        # PM2.5 + CO not installed yet (keep MISSING)
+        # Not installed yet
         SENSOR_STATUS["pm25"] = SensorState.MISSING
         SENSOR_STATUS["co"] = SensorState.MISSING
 
@@ -140,6 +166,7 @@ def init_sensors():
         SENSOR_STATUS["scd41"] = SensorState.ERROR
         SENSOR_STATUS["bme688"] = SensorState.ERROR
         return False
+
 
 
 # ---------------------------
