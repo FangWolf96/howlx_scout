@@ -7,7 +7,6 @@ os.environ["LGPIO_FILEDIR"] = "/var/run/lgpio"
 
 # lgpio STILL tries to create files in CWD in some code paths
 # Force a safe working directory
-os.chdir("/var/run/lgpio")
 # ----------------------------------------------
 import sys
 import time
