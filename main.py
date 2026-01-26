@@ -166,19 +166,29 @@ def read_sensors():
     if not ok:
         return mock_readings()
 
-    # --- SCD41 CO2 ---
-    co2 = None
-    if _scd41 is not None:
-        try:
-            if _scd41.data_ready:
-                co2 = int(_scd41.CO2)  # (if your lib uses CO2, swap)
-                SENSOR_STATUS["scd41"] = SensorState.READY
-            else:
-                # still warming
-                if SENSOR_STATUS["scd41"] != SensorState.MISSING:
-                    SENSOR_STATUS["scd41"] = SensorState.WARMUP
-        except Exception:
-            SENSOR_STATUS["scd41"] = SensorState.ERROR
+# --- SCD41 CO2 ---
+global _scd41_last_co2
+co2 = None
+
+if _scd41 is not None:
+    try:
+        # Warmup window after starting periodic measurement
+        warmup_s = 10  # seconds; tune if you want
+        since = SENSOR_SINCE.get("scd41") or time.time()
+        warmed = (time.time() - since) >= warmup_s
+
+        if _scd41.data_ready:
+            co2 = int(_scd41.co2)
+            _scd41_last_co2 = co2
+            SENSOR_STATUS["scd41"] = SensorState.READY
+        else:
+            # No new sample this tick: keep last value, don't downgrade state
+            co2 = _scd41_last_co2
+            SENSOR_STATUS["scd41"] = SensorState.READY if warmed else SensorState.WARMUP
+
+    except Exception:
+        SENSOR_STATUS["scd41"] = SensorState.ERROR
+
 
     # --- BME688 temp/humidity + gas ---
     temp_f = None
