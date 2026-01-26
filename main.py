@@ -2,35 +2,38 @@
 from pathlib import Path
 import os
 import sys
+import time
+
+# ---------------------------
+# App paths (do NOT chdir yet)
+# ---------------------------
+BASE_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = BASE_DIR / "assets"
 
 # ===========================
 # LGPIO RUNTIME FIX (Pi 5)
 # ===========================
-RUNTIME_DIR = "/var/run/lgpio"
+def _setup_lgpio_runtime():
+    runtime = "/var/run/lgpio"
+    try:
+        os.makedirs(runtime, exist_ok=True)
+        os.environ["LGPIO_FILEDIR"] = runtime
+        os.chdir(runtime)  # IMPORTANT: stay here for `import board`
+        return runtime
+    except PermissionError:
+        fallback = os.path.expanduser("~/.lgpio")
+        os.makedirs(fallback, exist_ok=True)
+        os.environ["LGPIO_FILEDIR"] = fallback
+        os.chdir(fallback)  # IMPORTANT: stay here for `import board`
+        return fallback
 
-try:
-    os.makedirs(RUNTIME_DIR, exist_ok=True)
-    os.environ["LGPIO_FILEDIR"] = RUNTIME_DIR
-    os.chdir(RUNTIME_DIR)   
-except PermissionError:
-    fallback = os.path.expanduser("~/.lgpio")
-    os.makedirs(fallback, exist_ok=True)
-    os.environ["LGPIO_FILEDIR"] = fallback
-    os.chdir(fallback)
-
-# ---------------------------
-# Restore app working dir
-# ---------------------------
-BASE_DIR = Path(__file__).resolve().parent
-os.chdir(BASE_DIR)
-ASSETS_DIR = BASE_DIR / "assets"
+LGPIO_DIR = _setup_lgpio_runtime()
 
 # ---------------------------
 # Normal imports
 # ---------------------------
 import random
 import json
-import time
 from PyQt5 import QtWidgets, QtGui, QtCore
 
 # ===========================
@@ -40,6 +43,11 @@ import board
 import busio
 import adafruit_scd4x
 import adafruit_bme680
+
+# ---------------------------
+# Now it's safe to return to repo dir
+# ---------------------------
+os.chdir(str(BASE_DIR))
 
 _i2c = None
 _scd41 = None
