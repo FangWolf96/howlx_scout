@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-
 import os
 
-# ---- HARD REQUIREMENT FOR LGPIO ----
-os.environ["LGPIO_FILEDIR"] = "/var/run/lgpio"
+# ---- LGPIO HARD FIX ----
+RUNTIME_DIR = "/var/run/lgpio"
+os.makedirs(RUNTIME_DIR, exist_ok=True)
 
-# lgpio STILL tries to create files in CWD in some code paths
-# Force a safe working directory
-# ----------------------------------------------
-import sys
-import time
+os.environ["LGPIO_FILEDIR"] = RUNTIME_DIR
+os.environ["HOME"] = RUNTIME_DIR
+
+os.chdir(RUNTIME_DIR)
+
 
 print("\n=== HowlX IAQ Scout — Sensor Diagnostics ===\n")
 
