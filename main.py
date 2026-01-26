@@ -1558,6 +1558,9 @@ class Dashboard(QtWidgets.QWidget):
         )
 
         left_layout.addWidget(self.info_scroll, stretch=1)
+        # ✅ ADD LEFT PANEL BACK
+        self.root.addWidget(self.left_panel)
+        
 
         # ===========================
         # RIGHT GRID PANEL
