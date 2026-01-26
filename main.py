@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import sys
 import time
+TEMP_F_OFFSET = -8.0
 
 # ---------------------------
 # App paths (do NOT chdir yet)
@@ -45,13 +46,16 @@ import adafruit_scd4x
 import adafruit_bme680
 
 # ---------------------------
-# Now it's safe to return to repo dir
+# Return to repo dir
 # ---------------------------
 os.chdir(str(BASE_DIR))
 
 _i2c = None
 _scd41 = None
 _bme688 = None
+_last_co2 = 400
+_last_scd_temp_c = None
+_last_scd_rh = None
 
 def init_sensors():
     global _i2c, _scd41, _bme688
@@ -70,6 +74,7 @@ def init_sensors():
 
 def read_sensors():
     global _i2c, _scd41, _bme688
+    global _last_co2, _last_scd_temp_c, _last_scd_rh
 
     # ---------------------------
     # Self-heal sensor init
@@ -85,67 +90,88 @@ def read_sensors():
                 "temp": 72.0,
                 "humidity": 40.0,
                 "co": 0.0,
-                "_present": {
-                    "co2": False,
-                    "bme": False,
-                    "voc": False,
-                }
+                "_present": {"co2": False, "bme": False, "voc": False},
+                "_voc_state": "missing",
             }
 
-    sensors_present = {
-        "co2": False,
-        "bme": False,
-        "voc": False,
-    }
+    sensors_present = {"co2": False, "bme": False, "voc": False}
 
     try:
-        # ---------- CO₂ (SCD41) ----------
-        if _scd41 and _scd41.data_ready:
-            co2 = int(_scd41.CO2)
-            sensors_present["co2"] = True
-        else:
-            co2 = 400  # safe fallback
+        # ---------- CO₂ + SCD41 temp/RH ----------
+        co2 = _last_co2
+        if _scd41:
+            if _scd41.data_ready:
+                try:
+                    co2 = int(_scd41.CO2)
+                    _last_co2 = co2
+                    sensors_present["co2"] = True
+                except Exception:
+                    pass
+
+                # Capture SCD41 temp/RH (only valid when data_ready)
+                try:
+                    _last_scd_temp_c = float(_scd41.temperature)
+                    _last_scd_rh = float(_scd41.relative_humidity)
+                except Exception:
+                    pass
+            else:
+                # not ready yet — keep last good value (prevents flicker)
+                sensors_present["co2"] = True  # device present even if not ready
 
         # ---------- BME688 ----------
         voc_state = "missing"
-        
+        voc = None
+
+        temp_f = None
+        humidity = None
+
         if _bme688:
             sensors_present["bme"] = True
 
             temp_c = _bme688.temperature
-            humidity = _bme688.relative_humidity
+            humidity_raw = _bme688.relative_humidity
             gas = _bme688.gas
 
             temp_f = round((temp_c * 9 / 5) + 32, 1)
-            humidity = round(humidity, 1)
+            temp_f = round(temp_f + TEMP_F_OFFSET, 1)
+            humidity = round(humidity_raw, 1)
 
-            # ---------- VOC handling ----------
-            if gas and gas > 1000:  # gas heater running + meaningful resistance
+            # VOC handling (still "index" style)
+            if gas and gas > 1000:
                 sensors_present["voc"] = True
-                voc = round(
-                    max(0.1, min(3.0, 3.0 - (gas / 300000))),
-                    2
-                )
+                voc = round(max(0.1, min(3.0, 3.0 - (gas / 300000))), 2)
                 voc_state = "ready"
             else:
                 voc = None
                 voc_state = "warming"
 
+        # ---------- Fallback temp/RH from SCD41 if BME is missing or clearly heat-soaked ----------
+        # You can tighten/loosen these heuristics.
+        if (temp_f is None or temp_f > 95) and _last_scd_temp_c is not None:
+            temp_f = round((_last_scd_temp_c * 9 / 5) + 32, 1)
+
+        if (humidity is None or humidity > 100 or humidity < 0) and _last_scd_rh is not None:
+            humidity = round(_last_scd_rh, 1)
+
+        # Final safety defaults + clamp
+        if temp_f is None:
+            temp_f = 72.0
+        if humidity is None:
+            humidity = 40.0
+        humidity = max(0.0, min(100.0, humidity))
+
         return {
             "co2": co2,
-            "pm25": 0.0,           # PM sensor not installed yet
+            "pm25": 0.0,
             "voc": voc,
             "temp": temp_f,
             "humidity": humidity,
-            "co": 0.0,             # CO sensor not installed yet
+            "co": 0.0,
             "_present": sensors_present,
-            "_voc_state": voc_state,   
+            "_voc_state": voc_state,
         }
 
     except Exception:
-        # ---------------------------
-        # Absolute safety fallback
-        # ---------------------------
         return {
             "co2": 400,
             "pm25": 0.0,
@@ -153,11 +179,8 @@ def read_sensors():
             "temp": 72.0,
             "humidity": 40.0,
             "co": 0.0,
-            "_present": {
-                "co2": False,
-                "bme": False,
-                "voc": False,
-            }
+            "_present": {"co2": False, "bme": False, "voc": False},
+            "_voc_state": "missing",
         }
 
 
@@ -1389,6 +1412,64 @@ class Dashboard(QtWidgets.QWidget):
             "temp": deque(maxlen=40),
 }
    
+    def update_left_panel_context(self, d, score, state, how_to):
+        """
+        contextual suggestions panel under the logo:
+        - One short context summary
+        - 1–3 prioritized suggestions
+        - No duplicates / no empty block
+        """
+
+        lines = []
+
+        # --- Context headline (what's happening) ---
+        if state == AlertState.CRITICAL:
+            lines.append("⛔ Immediate action recommended.")
+        elif state == AlertState.WARNING:
+            lines.append("⚠ Air quality needs attention.")
+        else:
+            lines.append("✓ Air quality looks good.")
+
+        # --- Context details (short + readable) ---
+        # Pick 1–2 most relevant drivers
+        drivers = []
+        if d.get("co", 0) >= 9:
+            drivers.append(f"CO {d['co']} ppm")
+        if d.get("pm25", 0) > 12:
+            drivers.append(f"PM2.5 {d['pm25']} µg/m³")
+        if d.get("co2", 0) > 800:
+            drivers.append(f"CO₂ {d['co2']} ppm")
+        if d.get("voc") is not None and d.get("voc", 0) > 1.0:
+            drivers.append(f"VOC {d['voc']}")
+
+        if drivers:
+            lines.append("Drivers: " + " · ".join(drivers[:2]))
+
+        lines.append(f"IAQ Score: {score}/100")
+
+        # --- Suggestions (prioritized, deduped) ---
+        suggestions = []
+        for s in (how_to or []):
+            s = (s or "").strip()
+            if not s:
+                continue
+            if s not in suggestions:
+                suggestions.append(s)
+
+        # Keep it tight like before
+        suggestions = suggestions[:3]
+
+        if suggestions:
+            lines.append("")
+            lines.append("Suggestions:")
+            for s in suggestions:
+                lines.append(f"• {s}")
+        else:
+            lines.append("")
+            lines.append("Suggestions:")
+            lines.append("• Keep monitoring. No changes recommended right now.")
+
+        self.info_text.setText("\n".join(lines))
 
 
         # --------------------------------
@@ -1690,6 +1771,7 @@ class Dashboard(QtWidgets.QWidget):
         self.last_how_to = how_to
         self.last_state = state
         self.update_alert_state_ui()
+        self.update_left_panel_context(d, s, state, how_to)
 
         # ---------------------------
         # Tile values
