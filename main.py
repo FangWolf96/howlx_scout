@@ -1867,7 +1867,7 @@ class Dashboard(QtWidgets.QWidget):
         self.last_voc = d.get("voc")
         self.last_temp = d["temp"]
         self.last_humidity = d["humidity"]
-        self.last_co = d["co"]
+        self.last_co = d.get("co")
         # ---------------------------
         # Survey mode data capture
         # ---------------------------
@@ -1884,10 +1884,12 @@ class Dashboard(QtWidgets.QWidget):
 
         # Auto-trigger CO danger overlay (skip if test mode)
         if not self.co_test_mode:
-            if self.last_co >= CO_DANGER_THRESHOLD:
-                self.co_danger.show_level(self.last_co)
+            co_val = d.get("co")  # use the fresh reading directly
+            if isinstance(co_val, (int, float)) and co_val >= CO_DANGER_THRESHOLD:
+                self.co_danger.show_level(co_val)
             elif self.co_danger.isVisible():
                 self.co_danger.hide()
+
 
         # --- Live detail refresh (single source of truth) ---
         if self.detail.isVisible() and self.detail.current_key:
