@@ -1,24 +1,34 @@
 import os
 
-# ---------------------------
+# =========================================================
 # FORCE CORRECT 800x480 SCALING ON PI TOUCH
-# ---------------------------
+# =========================================================
 os.environ["QT_QPA_PLATFORM"] = "eglfs"
 os.environ["QT_QPA_EGLFS_HIDECURSOR"] = "1"
 os.environ["QT_QPA_EGLFS_PHYSICAL_WIDTH"] = "154"
 os.environ["QT_QPA_EGLFS_PHYSICAL_HEIGHT"] = "86"
 os.environ["QT_FONT_DPI"] = "96"
 
+# =========================================================
+# IMPORTS
+# =========================================================
 import sys
 import random
 import json
 import time
 from pathlib import Path
+from enum import Enum
+
 from PyQt5 import QtWidgets, QtGui, QtCore
 
+# =========================================================
+# APP CONSTANTS
+# =========================================================
 WIDTH, HEIGHT = 800, 480
 
-# === SENSOR IMPORTS ===
+# =========================================================
+# SENSOR LIB IMPORTS 
+# =========================================================
 try:
     import board
     import busio
@@ -28,29 +38,35 @@ try:
 except Exception as e:
     print("Sensor libs not available:", repr(e))
     SENSORS_AVAILABLE = False
-    
-# === SENSOR INIT ===
+
+# =========================================================
+# GLOBAL SENSOR STATE (single source of truth)
+# =========================================================
 _i2c = None
 _scd41 = None
 _scd41_last_co2 = None
 _bme688 = None
-from enum import Enum
+
+
+_scd41_miss = 0
+_bme688_miss = 0
+MISS_LIMIT = 5
 
 class SensorState(Enum):
     MISSING = 0
-    WARMUP = 1
-    READY = 2
-    ERROR = 3
+    WARMUP  = 1
+    READY   = 2
+    ERROR   = 3
 
 SENSOR_STATUS = {
-    "scd41": SensorState.MISSING,
+    "scd41":  SensorState.MISSING,
     "bme688": SensorState.MISSING,
-    "pm25": SensorState.MISSING,  # not installed yet
-    "co": SensorState.MISSING,    # not installed yet
+    "pm25":   SensorState.MISSING,  # not installed yet
+    "co":     SensorState.MISSING,  # not installed yet
 }
 
 SENSOR_SINCE = {
-    "scd41": None,
+    "scd41":  None,
     "bme688": None,
 }
 
