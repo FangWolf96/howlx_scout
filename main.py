@@ -94,18 +94,42 @@ SENSOR_SINCE = {
     "pm25":   None,
 }
 
-def _i2c_scan(i2c):
-    addrs = []
+# =========================================================
+# I2C scan helpers (safe + throttled)
+# =========================================================
+_last_i2c_scan_ts = 0.0
+_last_i2c_addrs = set()
+
+def _i2c_scan(i2c, interval_s: float = 5.0, lock_timeout_s: float = 0.75):
+    """
+    Safe, throttled I2C scan.
+    - Won't spin forever trying to lock.
+    - Reuses last scan results for interval_s seconds.
+    """
+    global _last_i2c_scan_ts, _last_i2c_addrs
+
+    now = time.time()
+    if _last_i2c_addrs and (now - _last_i2c_scan_ts) < interval_s:
+        return set(_last_i2c_addrs)
+
+    t0 = now
+    while not i2c.try_lock():
+        if (time.time() - t0) > lock_timeout_s:
+            raise TimeoutError("I2C lock timeout")
+        time.sleep(0.01)
+
     try:
-        while not i2c.try_lock():
-            pass
-        addrs = i2c.scan()
+        addrs = set(i2c.scan())
     finally:
         try:
             i2c.unlock()
         except Exception:
             pass
+
+    _last_i2c_addrs = set(addrs)
+    _last_i2c_scan_ts = time.time()
     return set(addrs)
+
 
 
 def init_sensors():
