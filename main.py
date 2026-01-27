@@ -13,6 +13,7 @@ os.environ["QT_FONT_DPI"] = "96"
 # IMPORTS
 # =========================================================
 import sys
+import threading
 import serial
 import random
 import json
