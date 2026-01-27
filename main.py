@@ -13,6 +13,7 @@ os.environ["QT_FONT_DPI"] = "96"
 # IMPORTS
 # =========================================================
 import sys
+import serial
 import random
 import json
 import time
@@ -224,12 +225,16 @@ def init_sensors():
                 SENSOR_STATUS["bme688"] = SensorState.STALE
 
     # ---- PM2.5 (Plantower over UART) ----
+    # ---- PM2.5 (Plantower over UART) ----
     if has_pm25:
         _pm25_miss = 0
         if _pm25 is None:
             try:
-                uart = busio.UART(board.TX, board.RX, baudrate=9600, timeout=0.25)
-                _pm25 = adafruit_pm25.uart.PM25_UART(uart, reset_pin=None)
+                # busio.UART isn't supported on your platform; use pyserial
+                ser = serial.Serial("/dev/serial0", baudrate=9600, timeout=1)
+
+                # Adafruit driver expects a UART-like object; pyserial works well here
+                _pm25 = adafruit_pm25.uart.PM25_UART(ser, reset_pin=None)
 
                 SENSOR_STATUS["pm25"] = SensorState.WARMUP
                 SENSOR_SINCE["pm25"] = time.time()
@@ -247,7 +252,6 @@ def init_sensors():
         else:
             if _pm25 is not None:
                 SENSOR_STATUS["pm25"] = SensorState.STALE
-
 
         # CO still not installed
         SENSOR_STATUS["co"] = SensorState.MISSING
