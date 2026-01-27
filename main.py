@@ -71,6 +71,10 @@ _scd41_last_co2 = None
 _bme688 = None
 _pm25 = None
 
+_pm25_latest = None
+_pm25_lock = threading.Lock()
+_pm25_thread_started = False
+
 
 _scd41_miss = 0
 _bme688_miss = 0
@@ -228,24 +232,56 @@ def init_sensors():
                 SENSOR_STATUS["bme688"] = SensorState.STALE
 
     # ---- PM2.5 (Plantower over UART) ----
-    # ---- PM2.5 (Plantower over UART) ----
+    # ---- PM2.5 (Plantower over UART via pyserial) ----
     if has_pm25:
         _pm25_miss = 0
+
         if _pm25 is None:
             try:
-                # busio.UART isn't supported on your platform; use pyserial
-                ser = serial.Serial("/dev/ttyAMA0", baudrate=9600, timeout=1)
+                # Use pyserial against the actual UART device
+                # (timeout short keeps reads snappy)
+                ser = serial.Serial("/dev/ttyAMA0", baudrate=9600, timeout=0.1)
 
-                # Adafruit driver expects a UART-like object; pyserial works well here
+                # PM25_UART expects a UART-like object; pyserial works
                 _pm25 = PM25_UART(ser, reset_pin=None)
 
                 SENSOR_STATUS["pm25"] = SensorState.WARMUP
                 SENSOR_SINCE["pm25"] = time.time()
+
+                # Start background reader thread once (keeps latest reading fresh)
+                global _pm25_thread_started, _pm25_latest
+
+                if not _pm25_thread_started:
+                    _pm25_thread_started = True
+
+                    def _pm25_reader():
+                        global _pm25_latest
+                        while True:
+                            try:
+                                d = _pm25.read()
+                                if d:
+                                    with _pm25_lock:
+                                        _pm25_latest = d
+                            except Exception:
+                                # ignore transient read errors; keep looping
+                                pass
+                            time.sleep(0.05)  # ~20Hz check; low CPU
+
+                    threading.Thread(target=_pm25_reader, daemon=True).start()
+
             except Exception as e:
                 print("PM2.5 UART init error:", repr(e))
                 _pm25 = None
                 SENSOR_STATUS["pm25"] = SensorState.ERROR
                 SENSOR_SINCE["pm25"] = None
+
+        else:
+            # already initialized
+            if SENSOR_STATUS["pm25"] in (SensorState.MISSING, SensorState.ERROR, SensorState.STALE):
+                SENSOR_STATUS["pm25"] = SensorState.WARMUP
+                if SENSOR_SINCE.get("pm25") is None:
+                    SENSOR_SINCE["pm25"] = time.time()
+
     else:
         _pm25_miss += 1
         if _pm25_miss >= MISS_LIMIT:
@@ -256,9 +292,10 @@ def init_sensors():
             if _pm25 is not None:
                 SENSOR_STATUS["pm25"] = SensorState.STALE
 
-        # CO still not installed
-        SENSOR_STATUS["co"] = SensorState.MISSING
-        return True
+    # CO still not installed
+    SENSOR_STATUS["co"] = SensorState.MISSING
+    return True
+
 
 
 # ---------------------------
@@ -321,9 +358,15 @@ def read_sensors():
     pm25_val = None
     if _pm25 is not None:
         try:
-            data = _pm25.read()
-            pm25_val = float(data["pm25 standard"])
-            SENSOR_STATUS["pm25"] = SensorState.READY
+            with _pm25_lock:
+                d = _pm25_latest
+
+            if d:
+                pm25_val = float(d["pm25 standard"])
+                SENSOR_STATUS["pm25"] = SensorState.READY
+            else:
+                SENSOR_STATUS["pm25"] = SensorState.WARMUP
+
         except Exception as e:
             print("PM2.5 read error:", repr(e))
             SENSOR_STATUS["pm25"] = SensorState.ERROR
