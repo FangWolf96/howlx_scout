@@ -54,10 +54,12 @@ if SENSORS_AVAILABLE:
         print("BME680 lib missing:", repr(e))
 
     try:
-        import adafruit_pm25
+        from adafruit_pm25.uart import PM25_UART
         HAS_PM25 = True
     except Exception as e:
         print("PM25 lib missing:", repr(e))
+
+
 
 # =========================================================
 # GLOBAL SENSOR STATE (single source of truth)
@@ -231,10 +233,10 @@ def init_sensors():
         if _pm25 is None:
             try:
                 # busio.UART isn't supported on your platform; use pyserial
-                ser = serial.Serial("/dev/serial0", baudrate=9600, timeout=1)
+                ser = serial.Serial("/dev/ttyAMA0", baudrate=9600, timeout=1)
 
                 # Adafruit driver expects a UART-like object; pyserial works well here
-                _pm25 = adafruit_pm25.uart.PM25_UART(ser, reset_pin=None)
+                _pm25 = PM25_UART(ser, reset_pin=None)
 
                 SENSOR_STATUS["pm25"] = SensorState.WARMUP
                 SENSOR_SINCE["pm25"] = time.time()
