@@ -152,7 +152,8 @@ def _i2c_scan(i2c, interval_s: float = 5.0, lock_timeout_s: float = 0.75):
 
 
 def init_sensors():
-    global _i2c, _scd41, _bme688, _pm25, _scd41_miss, _bme688_miss, _pm25_miss
+    global _i2c, _scd41, _bme688, _pm25, _sgp40
+    global _scd41_miss, _bme688_miss, _pm25_miss, _sgp40_miss
 
     # If core libs missing, hard-disable everything
     if not SENSORS_AVAILABLE:
@@ -370,6 +371,7 @@ def mock_readings():
 def read_sensors():
     global _scd41_last_co2
     global _last_init_attempt
+    global _sgp40, _bme688, _pm25, _scd41
 
     # only (re)initialize occasionally; don't scan/init every tick
     if "_last_init_attempt" not in globals():
