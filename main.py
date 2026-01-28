@@ -32,7 +32,7 @@ WIDTH, HEIGHT = 800, 480
 # SENSOR LIB IMPORTS (per-sensor, so one missing lib doesn't kill all)
 # =========================================================
 SENSORS_AVAILABLE = True
-HAS_SCD4X = HAS_BME680 = HAS_PM25 = False
+HAS_SCD4X = HAS_BME680 = HAS_PM25 = HAS_SGP40 = False
 
 try:
     import board
@@ -60,6 +60,12 @@ if SENSORS_AVAILABLE:
     except Exception as e:
         print("PM25 lib missing:", repr(e))
 
+    try:
+        import adafruit_sgp40
+        HAS_SGP40 = True
+    except Exception as e:
+        print("SGP40 lib missing:", repr(e))
+
 
 
 # =========================================================
@@ -70,6 +76,7 @@ _scd41 = None
 _scd41_last_co2 = None
 _bme688 = None
 _pm25 = None
+_sgp40 = None
 
 _pm25_latest = None
 _pm25_lock = threading.Lock()
@@ -79,6 +86,7 @@ _pm25_thread_started = False
 _scd41_miss = 0
 _bme688_miss = 0
 _pm25_miss = 0
+_sgp40_miss = 0
 
 MISS_LIMIT = 5
 
@@ -91,6 +99,7 @@ class SensorState(Enum):
 
 SENSOR_STATUS = {
     "scd41":  SensorState.MISSING,
+    "sgp40":  SensorState.MISSING,
     "bme688": SensorState.MISSING,
     "pm25":   SensorState.MISSING,  # not installed yet
     "co":     SensorState.MISSING,  # not installed yet
@@ -100,6 +109,8 @@ SENSOR_SINCE = {
     "scd41":  None,
     "bme688": None,
     "pm25":   None,
+    "sgp40": None,
+
 }
 
 # =========================================================
@@ -230,6 +241,26 @@ def init_sensors():
         else:
             if _bme688 is not None:
                 SENSOR_STATUS["bme688"] = SensorState.STALE
+
+    # ---- SGP40 (VOC) ----
+    if HAS_SGP40:
+        _sgp40_miss = 0
+        if _sgp40 is None:
+            try:
+                _sgp40 = adafruit_sgp40.SGP40(_i2c)
+                SENSOR_STATUS["sgp40"] = SensorState.WARMUP
+                SENSOR_SINCE["sgp40"] = time.time()
+            except Exception as e:
+                print("SGP40 init error:", repr(e))
+                _sgp40 = None
+                SENSOR_STATUS["sgp40"] = SensorState.ERROR
+                SENSOR_SINCE["sgp40"] = None
+    else:
+        _sgp40_miss += 1
+        if _sgp40_miss >= MISS_LIMIT:
+            _sgp40 = None
+            SENSOR_STATUS["sgp40"] = SensorState.MISSING
+            SENSOR_SINCE["sgp40"] = None
 
     # ---- PM2.5 (Plantower over UART) ----
     # ---- PM2.5 (Plantower over UART via pyserial) ----
@@ -417,8 +448,29 @@ def read_sensors():
             SENSOR_STATUS["bme688"] = SensorState.ERROR
 
     voc = None
-    if gas is not None and SENSOR_STATUS["bme688"] == SensorState.READY:
+
+    # --- SGP40 VOC (preferred) ---
+    if _sgp40 is not None:
+        try:
+            rh = humidity if humidity is not None else 50.0
+            t = (temp_f - 32) * 5/9 if temp_f is not None else 25.0
+
+            raw = _sgp40.measure_raw(
+                temperature=t,
+                relative_humidity=rh
+            )
+
+            voc = round(min(max((raw - 20000) / 10000, 0.0), 3.0), 2)
+            SENSOR_STATUS["sgp40"] = SensorState.READY
+
+        except Exception as e:
+            print("SGP40 read error:", repr(e))
+            SENSOR_STATUS["sgp40"] = SensorState.ERROR
+
+    # --- fallback only if no SGP40 ---
+    elif gas is not None and SENSOR_STATUS["bme688"] == SensorState.READY:
         voc = voc_proxy_from_gas_ohms(float(gas))
+
 
     # Safe defaults for UI (keep these if you want temp/humidity always shown)
     if temp_f is None:
@@ -471,7 +523,7 @@ def evaluate_readings(d, history):
     has_co  = installed_state("co")
     has_pm  = installed_state("pm25")
     has_co2 = installed_state("scd41")
-    has_voc = installed_state("bme688")  # proxy from BME688 gas
+    has_voc = installed_state("sgp40") or installed_state("bme688")  # proxy from BME688 gas when SGP40 unavaile
 
     # -------------------------
     # Alert state (safety first)
@@ -2160,8 +2212,9 @@ class Dashboard(QtWidgets.QWidget):
         self.set_tile_status("Temp (°F)", SENSOR_STATUS["bme688"])
         self.set_tile_status("Humidity (%)", SENSOR_STATUS["bme688"])
 
-        # VOC uses BME688 gas proxy (warmup until ready)
-        self.set_tile_status("VOC Index", SENSOR_STATUS["bme688"])
+        # VOC uses SGP40 by default but can use BME688 gas proxy (BME68X req warmup)
+        self.set_tile_status("VOC Index", SENSOR_STATUS["sgp40"])
+
 
         # Not installed yet
         self.set_tile_status("PM2.5 (µg/m³)", SENSOR_STATUS["pm25"])
