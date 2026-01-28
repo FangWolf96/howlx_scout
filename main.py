@@ -2017,10 +2017,16 @@ class Dashboard(QtWidgets.QWidget):
         # --- BADGE ---
         badge = QtWidgets.QLabel("")
         badge.setObjectName("badge")
+        badge.setWordWrap(True)
+        badge.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignHCenter)
+        badge.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Minimum
+        )
         badge.setStyleSheet("font-size:14px; color:#888888;")
 
-        layout.addWidget(value)
-        layout.addWidget(badge)
+        layout.addWidget(badge)  
+
         layout.addStretch()
 
         return frame
