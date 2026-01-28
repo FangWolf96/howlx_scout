@@ -695,6 +695,26 @@ def co_severity(v):
         return ("Elevated", "#ff9800", "CO detected — investigate sources.")
     else:
         return ("Danger", "#f44336", "Dangerous CO levels — ventilate immediately.")
+        
+def voc_severity(v):
+    if v is None:
+        return ("—", "#888888", "VOC sensor warming up.")
+    if v <= 1.0:
+        return ("Good", "#4caf50", "VOC levels are low.")
+    elif v <= 2.0:
+        return ("Elevated", "#ff9800", "VOC levels are elevated.")
+    else:
+        return ("High", "#f44336", "High VOC levels detected.")
+
+
+def temp_severity(v):
+    if v < 68:
+        return ("Cool", "#03a9f4", "Temperature is below comfort range.")
+    elif v <= 78:
+        return ("Comfortable", "#4caf50", "Temperature is within comfort range.")
+    else:
+        return ("Warm", "#ff9800", "Temperature is above comfort range.")
+
 # ---------------------------
 # Rolling analysis helpers
 # ---------------------------
