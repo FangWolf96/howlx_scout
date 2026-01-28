@@ -2006,52 +2006,43 @@ class Dashboard(QtWidgets.QWidget):
     # ---------------------------
     def _build_tile(self, label):
         frame = QtWidgets.QFrame()
-        frame.setStyleSheet(
-            "background:#1a1a1a; border-radius:14px;"
-        )
+        frame.setStyleSheet("background:#1a1a1a; border-radius:14px;")
 
         layout = QtWidgets.QVBoxLayout(frame)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(6)
 
-        # --- TITLE ROW (label + status dot) ---
         title_row = QtWidgets.QHBoxLayout()
-        title_row.setContentsMargins(0, 0, 0, 0)
-
         title = QtWidgets.QLabel(label)
         title.setStyleSheet("font-size:16px; color:#aaaaaa;")
 
         status = QtWidgets.QLabel("●")
         status.setObjectName("status")
-        status.setStyleSheet("font-size:16px; color:#f44336;")  # default red
+        status.setStyleSheet("font-size:16px; color:#f44336;")
 
         title_row.addWidget(title)
         title_row.addStretch()
         title_row.addWidget(status)
-
         layout.addLayout(title_row)
 
-        # --- VALUE ---
-        value = QtWidgets.QLabel("--")
+        #VALUE (MUST BE ADDED / PARENTED)
+        value = QtWidgets.QLabel("--", frame)
         value.setObjectName("value")
         value.setStyleSheet("font-size:38px; font-weight:bold;")
+        layout.addWidget(value)
 
-        # --- BADGE ---
-        badge = QtWidgets.QLabel("")
+        # BADGE
+        badge = QtWidgets.QLabel("", frame)
         badge.setObjectName("badge")
         badge.setWordWrap(True)
         badge.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignHCenter)
-        badge.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding,
-            QtWidgets.QSizePolicy.Minimum
-        )
+        badge.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         badge.setStyleSheet("font-size:14px; color:#888888;")
-
-        layout.addWidget(badge)  
+        layout.addWidget(badge)
 
         layout.addStretch()
-
         return frame
+
 
     # ---------------------------
     # Left Panel UI 
