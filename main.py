@@ -22,6 +22,7 @@ from pathlib import Path
 from enum import Enum
 
 from sensirion_gas_index_algorithm.voc_algorithm import VocAlgorithm
+from technician_mode import TechnicianMode
 
 
 from PyQt5 import QtWidgets, QtGui, QtCore
@@ -1852,8 +1853,9 @@ class Dashboard(QtWidgets.QWidget):
              "VOC Index",
              "Temp (°F)",
              "Humidity (%)",
-             "Score"
-]
+             "Score",
+             "Technician"
+        ]
 
 
         for i, label in enumerate(labels):
@@ -1868,6 +1870,7 @@ class Dashboard(QtWidgets.QWidget):
         # ===========================
         self.detail = DetailOverlay(self)
         self.idle_overlay = IdleOverlay(self)
+        self.technician = TechnicianMode(self)
         # ===========================
         # CO danger overlay
         # ===========================
@@ -1973,6 +1976,7 @@ class Dashboard(QtWidgets.QWidget):
         self.grid.itemAtPosition(1, 1).widget().mousePressEvent = lambda e: self.open_detail("temp")
         self.grid.itemAtPosition(1, 2).widget().mousePressEvent = lambda e: self.open_detail("humidity")
         self.grid.itemAtPosition(2, 0).widget().mousePressEvent = lambda e: self.open_detail("score")
+        self.grid.itemAtPosition(2, 1).widget().mousePressEvent = lambda e: self.open_technician_mode()
 
     # ---------------------------
     # Survey sample writer
@@ -2333,7 +2337,7 @@ class Dashboard(QtWidgets.QWidget):
 
 
     # ---------------------------
-    # Idle mode helpers
+    # Idle mode/Nav helpers
     # ---------------------------
     def reset_idle_timer(self):
         # Never idle over critical overlays
@@ -2355,6 +2359,11 @@ class Dashboard(QtWidgets.QWidget):
         self.idle_active = False
         self.idle_overlay.stop()
         self.reset_idle_timer()
+    def open_technician_mode(self):
+        self.reset_idle_timer()
+        self.technician.show()
+        self.technician.raise_()
+
     # ---------------------------
     # Tile actions
     # ---------------------------
