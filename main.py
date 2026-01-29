@@ -2091,8 +2091,9 @@ class Dashboard(QtWidgets.QWidget):
             drivers.append(f"PM2.5 {pm} µg/m³")
         if installed_state("scd41") and co2 > 800:
             drivers.append(f"CO₂ {co2} ppm")
-        if installed_state("bme688") and d.get("voc") is not None and voc > 1.0:
+        if installed_state("sgp40") and d.get("voc") is not None and voc >= 150:
             drivers.append(f"VOC {voc}")
+
 
         if drivers:
             lines.append("Drivers: " + " · ".join(drivers[:2]))
