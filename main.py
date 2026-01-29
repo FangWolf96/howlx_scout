@@ -1236,7 +1236,11 @@ def smart_advice(history):
             "CO₂ has remained elevated over time, suggesting insufficient ventilation for current occupancy."
         )
 
-    voc_peaks = peak_count([v for v in history["voc"] if isinstance(v, (int, float))], 2.0)
+    voc_peaks = peak_count(
+        [v for v in history["voc"] if isinstance(v, (int, float))],
+        150
+    )
+
     if voc_peaks >= 3:
         advice.append(
             "Repeated VOC spikes detected, commonly linked to cleaners, fragrances, or off-gassing materials."
