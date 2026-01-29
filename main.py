@@ -21,6 +21,9 @@ import time
 from pathlib import Path
 from enum import Enum
 
+from sensirion_gas_index_algorithm.voc_algorithm import VocAlgorithm
+
+
 from PyQt5 import QtWidgets, QtGui, QtCore
 
 # =========================================================
@@ -77,6 +80,8 @@ _scd41_last_co2 = None
 _bme688 = None
 _pm25 = None
 _sgp40 = None
+_voc_algo = None
+
 
 _pm25_latest = None
 _pm25_lock = threading.Lock()
@@ -249,6 +254,12 @@ def init_sensors():
         if _sgp40 is None:
             try:
                 _sgp40 = adafruit_sgp40.SGP40(_i2c)
+
+                # ✅ init VOC algorithm ONCE
+                global _voc_algo
+                if _voc_algo is None:
+                    _voc_algo = VocAlgorithm()
+
                 SENSOR_STATUS["sgp40"] = SensorState.WARMUP
                 SENSOR_SINCE["sgp40"] = time.time()
             except Exception as e:
@@ -462,7 +473,9 @@ def read_sensors():
                 relative_humidity=rh
             )
 
-            voc = round(min(max((raw - 20000) / 10000, 0.0), 3.0), 2)
+            # ✅ Sensirion VOC Index (0–500 scale)
+            voc = int(_voc_algo.process(raw))
+
             SENSOR_STATUS["sgp40"] = SensorState.READY
 
         except Exception as e:
@@ -592,10 +605,10 @@ def evaluate_readings(d, history):
     # -------------------------
     if has_voc:
         voc_pen = 0
-        if voc > 2.0:
+        if voc > 250:
             voc_pen = -20
             how.append("Reduce VOC sources (cleaners/solvents); increase ventilation; consider activated carbon filtration.")
-        elif voc > 1.0:
+        elif voc > 150:
             voc_pen = -10
             how.append("Ventilate and reduce VOC sources (fragrances, sprays, harsh cleaners).")
 
@@ -701,10 +714,12 @@ def co_severity(v):
 def voc_severity(v):
     if v is None:
         return ("—", "#888888", "VOC sensor warming up.")
-    if v <= 1.0:
+    if v <= 100:
         return ("Good", "#4caf50", "VOC levels are low.")
-    elif v <= 2.0:
-        return ("Elevated", "#ff9800", "VOC levels are elevated.")
+    elif v <= 150:
+        return ("Moderate", "#ffeb3b", "VOC levels slightly elevated.")
+    elif v <= 250:
+        return ("Elevated", "#ff9800", "VOC levels elevated.")
     else:
         return ("High", "#f44336", "High VOC levels detected.")
 
@@ -919,11 +934,11 @@ def analyze_voc(current, history):
     values = list(history)
 
     avg = rolling_avg(values)
-    peaks = peak_count(values, 2.0)
-    sustained_high = sustained(values, 2.0, ratio=0.6)
+    peaks = peak_count(values, 250)
+    sustained_high = sustained(values, 250, ratio=0.6)
 
     recent = values[-5:]
-    recent_high = any(v > 2.0 for v in recent)
+    recent_high = any(v > 250 for v in recent)
 
     analysis["confidence"] = "High" if len(values) >= 20 else "Medium"
     analysis["window"] = "Rolling (~1 min)"
@@ -931,7 +946,7 @@ def analyze_voc(current, history):
     if sustained_high:
         analysis["status"] = "Sustained elevation"
         analysis["summary"] = (
-            "VOC levels have remained consistently elevated over time."
+            "VOC levels have remained consistently high over time."
         )
         analysis["health"] = (
             "Prolonged exposure to elevated VOCs may irritate airways and increase headaches or nausea."
@@ -942,9 +957,9 @@ def analyze_voc(current, history):
             "Consider activated carbon or charcoal filtration."
         ])
 
-    elif current > 2.0:
+    elif current > 250:
         analysis["status"] = "High"
-        analysis["summary"] = "VOC levels are currently elevated."
+        analysis["summary"] = "VOC levels are currently high."
         analysis["health"] = "Short-term exposure may irritate eyes, throat, or sensitive individuals."
         analysis["recommendations"].append(
             "Ventilate the space and reduce active VOC sources."
@@ -958,7 +973,7 @@ def analyze_voc(current, history):
             "Continue ventilation until VOC levels stabilize."
         )
 
-    elif avg <= 1.0:
+    elif avg <= 100:
         analysis["status"] = "Stable / Healthy"
         analysis["summary"] = "VOC levels have remained consistently low."
         analysis["health"] = "Air quality supports comfort with minimal chemical exposure."
@@ -969,6 +984,7 @@ def analyze_voc(current, history):
         analysis["health"] = "Some individuals may experience mild irritation or odor sensitivity."
 
     return analysis
+
 
 def analyze_humidity(current, history):
     analysis = {
