@@ -1421,6 +1421,48 @@ class TrendGraph(QtWidgets.QWidget):
         pen = QtGui.QPen(QtGui.QColor(color), 3)
         painter.setPen(pen)
         painter.drawPath(path)
+
+class SeverityBar(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.value = 0
+        self.max_value = 500
+
+    def set_value(self, v):
+        self.value = max(0, min(v, self.max_value))
+        self.update()
+
+    def paintEvent(self, e):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+
+        w = int(self.width())
+        h = int(self.height())
+
+        zones = [
+            (100, "#4caf50"),
+            (150, "#ffeb3b"),
+            (250, "#ff9800"),
+            (500, "#f44336"),
+        ]
+
+        y = h
+        for limit, color in zones:
+            zone_h = int(h * (limit / self.max_value))
+            p.fillRect(
+                0,
+                int(y - zone_h),
+                w,
+                zone_h,
+                QtGui.QColor(color),
+            )
+            y -= zone_h
+
+        marker_y = int(h - (self.value / self.max_value) * h)
+        p.setPen(QtGui.QPen(QtGui.QColor("#000000"), 4))
+        p.drawLine(0, marker_y, w, marker_y)
+
+#Detail Overlay Class
 class DetailOverlay(QtWidgets.QWidget):
     def __init__(self, parent):
         super().__init__(parent)
@@ -1428,10 +1470,46 @@ class DetailOverlay(QtWidgets.QWidget):
         self.setStyleSheet("background-color:#0b0b0b; color:white;")
         self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         self.hide()
+        # Swipe tracking
+        self._swipe_start_x = None
+        self.installEventFilter(self)
+
+
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(8)
+        layout.setSpacing(0)
+
+        self.pages = QtWidgets.QStackedWidget(self)
+        layout.addWidget(self.pages)
+        # ===========================
+        # PAGE 1 — Existing Detail UI
+        # ===========================
+        page1 = QtWidgets.QWidget()
+        page1_layout = QtWidgets.QVBoxLayout(page1)
+        page1_layout.setContentsMargins(0, 0, 0, 0)
+        page1_layout.setSpacing(8)
+
+        self.pages.addWidget(page1)
+
+        # ===========================
+        # PAGE 2 — Severity Breakdown
+        # ===========================
+        page2 = QtWidgets.QWidget()
+        page2_layout = QtWidgets.QHBoxLayout(page2)
+        page2_layout.setContentsMargins(12, 12, 12, 12)
+        page2_layout.setSpacing(16)
+        self.severity_bar = SeverityBar()
+        self.severity_bar.setFixedWidth(48)
+        page2_layout.addWidget(self.severity_bar)
+
+        self.severity_text = QtWidgets.QLabel("")
+        self.severity_text.setWordWrap(True)
+        self.severity_text.setStyleSheet("font-size:15px; color:#dddddd;")
+
+        page2_layout.addWidget(self.severity_text, stretch=1)
+        self.pages.addWidget(page2)
+
 
         # Top bar
         top = QtWidgets.QHBoxLayout()
@@ -1450,16 +1528,16 @@ class DetailOverlay(QtWidgets.QWidget):
         top.addWidget(self.title)
         top.addStretch()
 
-        layout.addLayout(top)
+        page1_layout.addLayout(top)
 
         self.value = QtWidgets.QLabel("")
         # Score summary (created once)
         self.score_summary = QtWidgets.QLabel("")
         self.score_summary.setStyleSheet("font-size:18px; margin-bottom:6px;")
-        layout.addWidget(self.score_summary)
+        page1_layout.addWidget(self.score_summary)
 
         self.value.setStyleSheet("font-size:44px; font-weight:bold;")
-        layout.addWidget(self.value)
+        page1_layout.addWidget(self.value)
         #disabled trend line (uncomment to activate) 
         #self.trend = TrendGraph()
         #layout.addWidget(self.trend)
@@ -1491,7 +1569,7 @@ class DetailOverlay(QtWidgets.QWidget):
             QtWidgets.QScroller.LeftMouseButtonGesture
         )
 
-        layout.addWidget(self.scroll, stretch=1)
+        page1_layout.addWidget(self.scroll, stretch=1)
 
 
 
@@ -1504,7 +1582,7 @@ class DetailOverlay(QtWidgets.QWidget):
             self.hide()
 
         back.clicked.connect(_close_detail)
-        layout.addWidget(back)
+        page1_layout.addWidget(back)
 
 
         self.current_key = None
@@ -1536,6 +1614,33 @@ class DetailOverlay(QtWidgets.QWidget):
             color:{score_color};
             """
         )
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.MouseButtonPress:
+            self._swipe_start_x = event.pos().x()
+            return False
+
+        if event.type() == QtCore.QEvent.MouseButtonRelease:
+            if self._swipe_start_x is None:
+                return False
+
+            dx = event.pos().x() - self._swipe_start_x
+            self._swipe_start_x = None
+
+            if abs(dx) < 60:
+                return False
+
+            idx = self.pages.currentIndex()
+
+            if dx < 0 and idx == 0:
+                self.pages.setCurrentIndex(1)
+                return True
+
+            if dx > 0 and idx == 1:
+                self.pages.setCurrentIndex(0)
+                return True
+
+        return False
+
 
         # Build breakdown text
         html = []
@@ -1598,16 +1703,52 @@ class DetailOverlay(QtWidgets.QWidget):
 
 
 
-    def show_detail(self, key, title, value_text, color, description):
-        #self.trend.hide()
+    def show_detail(self, key, title, value_text, color, description, analysis=None):
         self.current_key = key
+
         self.title.setText(title)
         self.value.setText(value_text)
         self.value.setStyleSheet(
             f"font-size:56px; font-weight:bold; color:{color};"
         )
         self.desc.setText(description)
+
+        # ===========================
+        # PAGE 2 — Severity Bar
+        # ===========================
+        try:
+            numeric_value = float(value_text.split()[0])
+        except Exception:
+            numeric_value = None
+
+        # ---- Warm-up / learning state takes priority ----
+        if not analysis:
+            self.severity_bar.set_value(0)
+            self.severity_text.setText("No analysis available yet.")
+
+        elif analysis.get("confidence") == "Low":
+            self.severity_bar.set_value(0)
+            self.severity_text.setText(
+                "Sensor is learning baseline levels.\n\n"
+                "Severity will stabilize after warm-up."
+            )
+
+        # ---- Active severity (ONLY meaningful for VOC) ----
+        elif key == "voc" and numeric_value is not None:
+            self.severity_bar.set_value(numeric_value)
+            self.severity_text.setText(
+                f"Current level: {analysis.get('status', '—')}\n\n"
+                f"{analysis.get('summary', '')}"
+            )
+
+        # ---- Fallback ----
+        else:
+            self.severity_bar.set_value(0)
+            self.severity_text.setText("No severity data available.")
+
         self.show()
+
+
     def update_value(self, value_text, color=None):
         if not self.isVisible():
             return
@@ -1618,8 +1759,7 @@ class DetailOverlay(QtWidgets.QWidget):
             self.value.setStyleSheet(
                 f"font-size:44px; font-weight:700; color:{color}; margin-bottom:6px;"
             )
-
-
+            
 
 # ---------------------------
 # CO Danger Fullscreen Overlay
@@ -1627,7 +1767,9 @@ class DetailOverlay(QtWidgets.QWidget):
 class CODangerOverlay(QtWidgets.QWidget):
     def __init__(self, parent):
         super().__init__(parent)
-        self.parent = parent
+
+        # Keep explicit reference to dashboard (avoid shadowing Qt parent)
+        self.dashboard = parent
 
         self.setGeometry(0, 0, WIDTH, HEIGHT)
         self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
@@ -1638,6 +1780,9 @@ class CODangerOverlay(QtWidgets.QWidget):
 
         self.hide()
 
+        # ===========================
+        # Layout
+        # ===========================
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(36, 36, 36, 36)
         layout.setSpacing(20)
@@ -1652,7 +1797,7 @@ class CODangerOverlay(QtWidgets.QWidget):
         self.value.setStyleSheet("font-size:72px; font-weight:bold;")
 
         msg = QtWidgets.QLabel(
-            "Dangerous carbon monoxide levels detected! Incapacitation likely! \n\n"
+            "Dangerous carbon monoxide levels detected! Incapacitation likely!\n\n"
             "• Ventilate immediately\n"
             "• Shut off combustion sources\n"
             "• Evacuate if levels remain high"
@@ -1676,24 +1821,36 @@ class CODangerOverlay(QtWidgets.QWidget):
         """)
         dismiss.clicked.connect(self.dismiss)
 
+        # ===========================
+        # Assemble
+        # ===========================
         layout.addStretch()
         layout.addWidget(title)
-        layout.addWidget(self.value)
+        layout.addWidget(self.value)   # ✅ fixed: correct layout
         layout.addWidget(msg)
         layout.addStretch()
         layout.addWidget(dismiss)
 
+    # ---------------------------
+    # Public API
+    # ---------------------------
     def show_level(self, co_ppm):
         self.value.setText(f"{co_ppm} ppm")
         self.show()
         self.raise_()
         self.flash_timer.start(500)  # flash every 500ms
 
+    # ---------------------------
+    # Flash animation
+    # ---------------------------
     def _flash(self):
         self.flash_state = not self.flash_state
         color = "#8b0000" if self.flash_state else "#b00000"
         self.setStyleSheet(f"background-color:{color}; color:white;")
 
+    # ---------------------------
+    # User acknowledgment
+    # ---------------------------
     def dismiss(self):
         """
         User acknowledgment.
@@ -1702,10 +1859,10 @@ class CODangerOverlay(QtWidgets.QWidget):
         self.hide()
         self.flash_timer.stop()
 
-        # Test mode exits permanently
-        if self.parent.co_test_mode:
-            self.parent.co_test_mode = False
-            self.parent.test_co_btn.setText("Test CO Danger")
+        # Exit test mode cleanly
+        if self.dashboard.co_test_mode:
+            self.dashboard.co_test_mode = False
+            self.dashboard.test_co_btn.setText("Test CO Danger")
 
 
 # ---------------------------
@@ -2360,6 +2517,10 @@ class Dashboard(QtWidgets.QWidget):
     # ---------------------------
     def open_detail(self, key):
         self.reset_idle_timer()
+        current_page = self.detail.pages.currentIndex()
+        self.detail.pages.setCurrentIndex(current_page)
+
+
 
         if key == "pm25":
             # --- SAFE HANDLING WHEN SENSOR NOT INSTALLED ---
