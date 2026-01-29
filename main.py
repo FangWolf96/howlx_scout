@@ -75,6 +75,20 @@ if SENSORS_AVAILABLE:
 VOC_WARMUP_SECONDS = 6 * 60  # 6 minutes (Sensirion recommended)
 VOC_CONFIDENCE_SECONDS = 20 * 60  # 20 minutes
 
+def voc_confidence():
+    since = SENSOR_SINCE.get("sgp40")
+    if not since:
+        return "Low"
+
+    elapsed = time.time() - since
+
+    if elapsed < VOC_WARMUP_SECONDS:
+        return "Low"
+    elif elapsed < VOC_CONFIDENCE_SECONDS:
+        return "Medium"
+    else:
+        return "High"
+
 
 # =========================================================
 # GLOBAL SENSOR STATE (single source of truth)
@@ -613,7 +627,7 @@ def evaluate_readings(d, history):
     # -------------------------
     # VOC penalty (VOC can be None during warmup)
     # -------------------------
-    if has_voc:
+    if has_voc and voc_confidence() != "Low":
         voc_pen = 0
         if voc > 250:
             voc_pen = -20
@@ -932,6 +946,20 @@ def analyze_voc(current, history):
         "recommendations": [],
         "window": "Instant"
     }
+    conf = voc_confidence()
+
+    if conf == "Low":
+        analysis["status"] = "Learning baseline"
+        analysis["confidence"] = "Low"
+        analysis["summary"] = (
+            "VOC sensor is still learning the normal air profile for this space."
+        )
+        analysis["health"] = (
+            "Health impact cannot yet be determined reliably during sensor warm-up."
+        )
+        analysis["window"] = "Warm-up (first 20 min)"
+        return analysis
+
 
     # Not enough data yet
     if not history or len(history) < 5:
@@ -950,7 +978,7 @@ def analyze_voc(current, history):
     recent = values[-5:]
     recent_high = any(v > 250 for v in recent)
 
-    analysis["confidence"] = "High" if len(values) >= 20 else "Medium"
+    analysis["confidence"] = conf
     analysis["window"] = "Rolling (~1 min)"
 
     if sustained_high:
@@ -2264,6 +2292,16 @@ class Dashboard(QtWidgets.QWidget):
 
         # VOC uses SGP40 by default but can use BME688 gas proxy (BME68X req warmup)
         self.set_tile_status("VOC Index", SENSOR_STATUS["sgp40"])
+        badge = self.tiles["VOC Index"].parent().findChild(QtWidgets.QLabel, "badge")
+        if badge:
+            conf = voc_confidence()
+            if conf == "Low":
+                badge.setText("Learning baseline…")
+            elif conf == "Medium":
+                badge.setText("Stabilizing")
+            else:
+                badge.setText("")
+
 
 
         # Not installed yet
