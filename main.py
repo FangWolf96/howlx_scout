@@ -69,6 +69,11 @@ if SENSORS_AVAILABLE:
     except Exception as e:
         print("SGP40 lib missing:", repr(e))
 
+# =========================================================
+# SENSOR WARMUP TIMING
+# =========================================================
+VOC_WARMUP_SECONDS = 6 * 60  # 6 minutes (Sensirion recommended)
+VOC_CONFIDENCE_SECONDS = 20 * 60  # 20 minutes
 
 
 # =========================================================
