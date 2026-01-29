@@ -622,7 +622,7 @@ def evaluate_readings(d, history):
             breakdown.append({
                 "metric": "VOC",
                 "points": voc_pen,
-                "label": "High" if voc > 2.0 else "Elevated",
+                "label": voc_severity(voc)[0],
                 "color": penalty_color(voc_pen),
             })
 
