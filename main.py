@@ -2370,12 +2370,8 @@ class Dashboard(QtWidgets.QWidget):
                 voc_color = "#888888"
                 value_text = "--"
             else:
-                if voc_current <= 1.0:
-                    voc_color = "#4caf50"
-                elif voc_current <= 2.0:
-                    voc_color = "#ff9800"
-                else:
-                    voc_color = "#f44336"
+                _, voc_color, _ = voc_severity(voc_current)
+
                 value_text = str(voc_current)
 
             self.detail.show_detail(
