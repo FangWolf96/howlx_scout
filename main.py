@@ -545,7 +545,12 @@ def evaluate_readings(d, history):
     # -------------------------
     if has_co and co >= CO_DANGER_THRESHOLD:
         state = AlertState.CRITICAL
-    elif (has_pm and pm > 35) or (has_co2 and co2 > 1200) or (has_voc and voc > 2.0) or (has_co and co >= 9):
+    elif (
+    (has_pm and pm > 35) or
+    (has_co2 and co2 > 1200) or
+    (has_voc and voc >= 150) or
+    (has_co and co >= 9)
+):
         state = AlertState.WARNING
     else:
         state = AlertState.NORMAL
