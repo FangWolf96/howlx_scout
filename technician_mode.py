@@ -27,11 +27,12 @@ class TechnicianMode(QtWidgets.QWidget):
         # Header
         # =========================
         header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(16)
 
         logo = QtWidgets.QLabel()
         pix = QtGui.QPixmap("assets/tech_logo.png").scaled(
-            160, 160,
+            140, 140,
             QtCore.Qt.KeepAspectRatio,
             QtCore.Qt.SmoothTransformation
         )
@@ -40,6 +41,7 @@ class TechnicianMode(QtWidgets.QWidget):
         header.addWidget(logo)
 
         title_stack = QtWidgets.QVBoxLayout()
+        title_stack.setAlignment(QtCore.Qt.AlignTop)
         title_stack.setSpacing(4)
 
         title = QtWidgets.QLabel("Technician Mode")
@@ -66,11 +68,18 @@ class TechnicianMode(QtWidgets.QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumHeight(240)
 
         scroll_widget = QtWidgets.QWidget()
         scroll_layout = QtWidgets.QVBoxLayout(scroll_widget)
         scroll_layout.setContentsMargins(0, 0, 0, 0)
         scroll_layout.setSpacing(16)
+
+        grid = QtWidgets.QGridLayout()
+        grid.setSpacing(16)
+
+        # add tiles to grid here
+
 
         # =========================
         # Tile grid
@@ -79,19 +88,18 @@ class TechnicianMode(QtWidgets.QWidget):
         grid.setSpacing(16)
 
         tiles = [
-            ("Analysis & Trends", "📈", self.open_charts),
-            ("Sensor Diagnostics", "🧪", self.open_diagnostics),
-            ("Calibration (Coming Soon)", "⚙", self.open_calibration),
+            ("Analysis & Trends", "assets/icons/analysis.svg", self.open_charts),
+            ("Sensor Diagnostics", "assets/icons/sensors.svg", self.open_diagnostics),
+            ("Calibration (Coming Soon)", "assets/icons/calibration.svg", self.open_calibration),
         ]
+
 
         for i, (label, icon, handler) in enumerate(tiles):
             tile = self._build_tile(label, icon)
             tile.mousePressEvent = lambda e, h=handler: h()
             grid.addWidget(tile, i // 2, i % 2)
-
+        
         scroll_layout.addLayout(grid)
-        scroll_layout.addStretch()
-
         scroll.setWidget(scroll_widget)
         root.addWidget(scroll, stretch=1)
 
@@ -117,7 +125,7 @@ class TechnicianMode(QtWidgets.QWidget):
     # =====================================================
     # Tile builder
     # =====================================================
-    def _build_tile(self, text, icon):
+    def _build_tile(self, text, icon_path):
         frame = QtWidgets.QFrame()
         frame.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
         frame.setStyleSheet("""
@@ -135,9 +143,15 @@ class TechnicianMode(QtWidgets.QWidget):
         layout.setContentsMargins(22, 22, 22, 22)
         layout.setSpacing(10)
 
-        icon_lbl = QtWidgets.QLabel(icon)
-        icon_lbl.setAlignment(QtCore.Qt.AlignCenter)
-        icon_lbl.setStyleSheet("font-size:42px;")
+        icon = QtWidgets.QLabel()
+        icon.setAlignment(QtCore.Qt.AlignCenter)
+        icon.setPixmap(
+            QtGui.QPixmap(icon_path).scaled(
+                48, 48,
+                QtCore.Qt.KeepAspectRatio,
+                QtCore.Qt.SmoothTransformation
+            )
+        )
 
         title = QtWidgets.QLabel(text)
         title.setAlignment(QtCore.Qt.AlignCenter)
@@ -149,7 +163,7 @@ class TechnicianMode(QtWidgets.QWidget):
         sub.setStyleSheet("font-size:14px; color:#888888;")
 
         layout.addStretch()
-        layout.addWidget(icon_lbl)
+        layout.addWidget(icon)
         layout.addWidget(title)
         layout.addWidget(sub)
         layout.addStretch()
