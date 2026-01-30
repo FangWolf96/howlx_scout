@@ -2068,6 +2068,7 @@ class Dashboard(QtWidgets.QWidget):
     # ---------------------------
     def _build_tile(self, label):
         frame = QtWidgets.QFrame()
+        frame.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
         frame.setStyleSheet("background:#1a1a1a; border-radius:14px;")
 
         layout = QtWidgets.QVBoxLayout(frame)
@@ -2223,6 +2224,8 @@ class Dashboard(QtWidgets.QWidget):
         self.tiles["Temp (°F)"].setText(str(d["temp"]))
         self.tiles["Humidity (%)"].setText(str(d["humidity"]))
         self.tiles["Score"].setText(f"{s}/100")
+        # Technician mode tile (static, not a sensor)
+        self.tiles["Technician"].setText("Advanced Diag.")
         self.tiles["CO (ppm)"].setText("--" if d.get("co") is None else str(d["co"]))
 
         
@@ -2317,6 +2320,11 @@ class Dashboard(QtWidgets.QWidget):
         if (SENSOR_STATUS["scd41"] in (SensorState.MISSING, SensorState.ERROR)) and (SENSOR_STATUS["bme688"] in (SensorState.MISSING, SensorState.ERROR)):
             overall = SensorState.ERROR
         self.set_tile_status("Score", overall)
+        # Technician tile is a mode, not a sensor
+        tech_dot = self.tiles["Technician"].parent().findChild(QtWidgets.QLabel, "status")
+        if tech_dot:
+            tech_dot.setStyleSheet("font-size:16px; color:#3a7bd5;")  # calm blue
+
 
     # ---------------------------
     # Sensor State Helper
