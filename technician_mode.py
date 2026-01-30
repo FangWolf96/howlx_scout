@@ -28,7 +28,7 @@ class TechnicianMode(QtWidgets.QWidget):
         # =========================
         header = QtWidgets.QVBoxLayout()
         logo = QtWidgets.QLabel()
-        pix = QtGui.QPixmap("assets/logo.png").scaled(
+        pix = QtGui.QPixmap("assets/tech_logo.png").scaled(
             120, 120,
             QtCore.Qt.KeepAspectRatio,
             QtCore.Qt.SmoothTransformation
