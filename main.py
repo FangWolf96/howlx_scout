@@ -522,7 +522,7 @@ def read_sensors():
         "co": None,  # not installed yet
     }
 
-from enum import Enum
+
 
 class AlertState(Enum):
     NORMAL = 0
@@ -2226,6 +2226,10 @@ class Dashboard(QtWidgets.QWidget):
         self.tiles["Score"].setText(f"{s}/100")
         # Technician mode tile (static, not a sensor)
         self.tiles["Technician"].setText("Advanced Diag.")
+        badge = self.tiles["Technician"].parent().findChild(QtWidgets.QLabel, "badge")
+        if badge:
+            badge.setText("Tools & Charts")
+
         self.tiles["CO (ppm)"].setText("--" if d.get("co") is None else str(d["co"]))
 
         
