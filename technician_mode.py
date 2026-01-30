@@ -22,6 +22,12 @@ class TechnicianMode(QtWidgets.QWidget):
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(16)
+        from tech_charts import AnalysisTrends
+        from tech_diagnostics import SensorDiagnostics
+
+        self.charts = AnalysisTrends(self)
+        self.diagnostics = SensorDiagnostics(self)
+
 
         # =========================
         # Header
@@ -74,11 +80,6 @@ class TechnicianMode(QtWidgets.QWidget):
         scroll_layout = QtWidgets.QVBoxLayout(scroll_widget)
         scroll_layout.setContentsMargins(0, 0, 0, 0)
         scroll_layout.setSpacing(16)
-
-        grid = QtWidgets.QGridLayout()
-        grid.setSpacing(16)
-
-        # add tiles to grid here
 
 
         # =========================
@@ -174,10 +175,14 @@ class TechnicianMode(QtWidgets.QWidget):
     # Navigation stubs
     # =====================================================
     def open_charts(self):
-        print("Technician → Analysis & Trends (stub)")
+        self.charts.show()
+        self.charts.raise_()
+
 
     def open_diagnostics(self):
-        print("Technician → Sensor Diagnostics (stub)")
+        self.diagnostics.show()
+        self.diagnostics.raise_()
+
 
     def open_calibration(self):
         print("Technician → Calibration (stub)")
