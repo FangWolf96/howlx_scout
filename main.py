@@ -2225,7 +2225,7 @@ class Dashboard(QtWidgets.QWidget):
         self.tiles["Humidity (%)"].setText(str(d["humidity"]))
         self.tiles["Score"].setText(f"{s}/100")
         # Technician mode tile (static, not a sensor)
-        self.tiles["Technician"].setText("Advanced Diag.")
+        self.tiles["Technician"].setText("Analyze")
         badge = self.tiles["Technician"].parent().findChild(QtWidgets.QLabel, "badge")
         if badge:
             badge.setText("Tools & Charts")
