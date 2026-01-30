@@ -26,29 +26,51 @@ class TechnicianMode(QtWidgets.QWidget):
         # =========================
         # Header
         # =========================
-        header = QtWidgets.QVBoxLayout()
+        header = QtWidgets.QHBoxLayout()
+        header.setSpacing(16)
+
         logo = QtWidgets.QLabel()
         pix = QtGui.QPixmap("assets/tech_logo.png").scaled(
-            120, 120,
+            160, 160,
             QtCore.Qt.KeepAspectRatio,
             QtCore.Qt.SmoothTransformation
         )
         logo.setPixmap(pix)
-        logo.setAlignment(QtCore.Qt.AlignLeft)
-
+        logo.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
         header.addWidget(logo)
 
+        title_stack = QtWidgets.QVBoxLayout()
+        title_stack.setSpacing(4)
+
         title = QtWidgets.QLabel("Technician Mode")
-        title.setStyleSheet("font-size:32px; font-weight:700;")
+        title.setStyleSheet("font-size:34px; font-weight:700;")
 
         subtitle = QtWidgets.QLabel(
             "Advanced diagnostics, trends, and sensor-level analysis"
         )
         subtitle.setStyleSheet("font-size:16px; color:#aaaaaa;")
 
-        header.addWidget(title)
-        header.addWidget(subtitle)
+        title_stack.addWidget(title)
+        title_stack.addWidget(subtitle)
+        title_stack.addStretch()
+
+        header.addLayout(title_stack)
+        header.addStretch()
+
         root.addLayout(header)
+
+        # =========================
+        # Scroll container
+        # =========================
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+
+        scroll_widget = QtWidgets.QWidget()
+        scroll_layout = QtWidgets.QVBoxLayout(scroll_widget)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(16)
 
         # =========================
         # Tile grid
@@ -56,21 +78,22 @@ class TechnicianMode(QtWidgets.QWidget):
         grid = QtWidgets.QGridLayout()
         grid.setSpacing(16)
 
-        self.tiles = {}
-
         tiles = [
-            ("📈 Analysis & Trends", self.open_charts),
-            ("🧪 Sensor Diagnostics", self.open_diagnostics),
-            ("⚙ Calibration (Coming Soon)", self.open_calibration),
+            ("Analysis & Trends", "📈", self.open_charts),
+            ("Sensor Diagnostics", "🧪", self.open_diagnostics),
+            ("Calibration (Coming Soon)", "⚙", self.open_calibration),
         ]
 
-        for i, (label, handler) in enumerate(tiles):
-            tile = self._build_tile(label)
+        for i, (label, icon, handler) in enumerate(tiles):
+            tile = self._build_tile(label, icon)
             tile.mousePressEvent = lambda e, h=handler: h()
             grid.addWidget(tile, i // 2, i % 2)
 
-        root.addLayout(grid)
-        root.addStretch()
+        scroll_layout.addLayout(grid)
+        scroll_layout.addStretch()
+
+        scroll.setWidget(scroll_widget)
+        root.addWidget(scroll, stretch=1)
 
         # =========================
         # Back button
@@ -92,52 +115,55 @@ class TechnicianMode(QtWidgets.QWidget):
         root.addWidget(back)
 
     # =====================================================
-    # Tile builder (safe, static)
+    # Tile builder
     # =====================================================
-    def _build_tile(self, text):
+    def _build_tile(self, text, icon):
         frame = QtWidgets.QFrame()
         frame.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
         frame.setStyleSheet("""
             QFrame {
                 background:#151515;
-                border-radius:16px;
+                border-radius:18px;
             }
             QFrame:hover {
-                background:#1c1c1c;
+                background:#1f1f1f;
             }
         """)
-        frame.setMinimumHeight(120)
+        frame.setMinimumHeight(140)
 
         layout = QtWidgets.QVBoxLayout(frame)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setAlignment(QtCore.Qt.AlignCenter)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(10)
 
-        label = QtWidgets.QLabel(text)
-        label.setAlignment(QtCore.Qt.AlignCenter)
-        label.setWordWrap(True)
-        label.setStyleSheet("font-size:20px; font-weight:600;")
+        icon_lbl = QtWidgets.QLabel(icon)
+        icon_lbl.setAlignment(QtCore.Qt.AlignCenter)
+        icon_lbl.setStyleSheet("font-size:42px;")
+
+        title = QtWidgets.QLabel(text)
+        title.setAlignment(QtCore.Qt.AlignCenter)
+        title.setWordWrap(True)
+        title.setStyleSheet("font-size:20px; font-weight:600;")
 
         sub = QtWidgets.QLabel("Tap to open")
         sub.setAlignment(QtCore.Qt.AlignCenter)
         sub.setStyleSheet("font-size:14px; color:#888888;")
 
-        layout.addWidget(label)
-        layout.addSpacing(6)
+        layout.addStretch()
+        layout.addWidget(icon_lbl)
+        layout.addWidget(title)
         layout.addWidget(sub)
+        layout.addStretch()
 
         return frame
 
     # =====================================================
-    # Navigation stubs (NO LOGIC YET)
+    # Navigation stubs
     # =====================================================
     def open_charts(self):
         print("Technician → Analysis & Trends (stub)")
-        # future: self.charts.show()
 
     def open_diagnostics(self):
         print("Technician → Sensor Diagnostics (stub)")
-        # future: self.diagnostics.show()
 
     def open_calibration(self):
         print("Technician → Calibration (stub)")
-        # future: self.calibration.show()
