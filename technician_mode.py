@@ -1,4 +1,6 @@
 from PyQt5 import QtWidgets, QtCore, QtGui
+from PyQt5 import QtSvg
+
 
 WIDTH, HEIGHT = 800, 480
 
@@ -89,10 +91,11 @@ class TechnicianMode(QtWidgets.QWidget):
         grid.setSpacing(16)
 
         tiles = [
-            ("Analysis & Trends", "assets/icons/analysis.svg", self.open_charts),
-            ("Sensor Diagnostics", "assets/icons/sensors.svg", self.open_diagnostics),
-            ("Calibration (Coming Soon)", "assets/icons/calibration.svg", self.open_calibration),
+            ("Analysis & Trends", "assets/Analytics.svg", self.open_charts),
+            ("Sensor Diagnostics", "assets/Sensors.svg", self.open_diagnostics),
+            ("Calibration (Coming Soon)", "assets/Calibration.svg", self.open_calibration),
         ]
+
 
 
         for i, (label, icon, handler) in enumerate(tiles):
@@ -144,15 +147,9 @@ class TechnicianMode(QtWidgets.QWidget):
         layout.setContentsMargins(22, 22, 22, 22)
         layout.setSpacing(10)
 
-        icon = QtWidgets.QLabel()
-        icon.setAlignment(QtCore.Qt.AlignCenter)
-        icon.setPixmap(
-            QtGui.QPixmap(icon_path).scaled(
-                48, 48,
-                QtCore.Qt.KeepAspectRatio,
-                QtCore.Qt.SmoothTransformation
-            )
-        )
+        icon = QtSvg.QSvgWidget(icon_path)
+        icon.setFixedSize(48, 48)
+        icon.setStyleSheet("background: transparent;")
 
         title = QtWidgets.QLabel(text)
         title.setAlignment(QtCore.Qt.AlignCenter)
@@ -164,12 +161,13 @@ class TechnicianMode(QtWidgets.QWidget):
         sub.setStyleSheet("font-size:14px; color:#888888;")
 
         layout.addStretch()
-        layout.addWidget(icon)
+        layout.addWidget(icon, alignment=QtCore.Qt.AlignCenter)
         layout.addWidget(title)
         layout.addWidget(sub)
         layout.addStretch()
 
         return frame
+
 
     # =====================================================
     # Navigation stubs
